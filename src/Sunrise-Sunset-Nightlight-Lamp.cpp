@@ -1,57 +1,96 @@
+// ****************************************************************************************************************************************************************
+// ****************************************************************************************************************************************************************
+// This is designed to run on an ESP8266 using FastLED, with optional use of Blynk for a phone App
+// It connects to an NTP time server, and sunrise/set server to determine time of day (UTC) and when the sun
+// will rise and set based on Longitude and Latitude co-ordinates.  
+//
+// There are 2 modes of operation as set by the nightmode var.  
+// 0 = day time LEDs are yellow, night LEDs are blue and as sun rises/sets LEDs reflect the colours of that change
+// 1 = night light mode.  day time LEDs are off, night LEDs are yellow and as sun rises/sets LEDs reflect the colours of that change
+// 2 = night light mode.  day time LEDs are off, night LEDs are yellow  with no sun rise/set LEDs changes (e.g a hard on/off)
+//
+// Variables of interest are found between the 'Things to change' comment lines
+// Including the time delay between updating LEDs, time between NTP time checks and time between sunrise/set API requests.
+// Note: After NTP time is received, internal Millis clock tracks time fairly acuratley, sunrise/set times only change once a day.
+// Note: NTP is UDP and can fail, there is a check that the new NTP time isn't too different from expected time.  If it is, it keeps using 
+// current time, unless it fails 3 times.  Then it will use NTP time (assumed after 3 times the NTP is correct afterall compared to Millis)
+// red/green/blue_nightlight variables allow you to specify the colour at night time.  These can be controlled by a Blynk app (virtual pins 1,2 & 3)
+// 
+// Other variables are self evident (hopefully).  Wifi credentials are stored in Platformoi.ini file ann injected during build.
+// If not using PlatformOI, you can enter directly into the code in the 1st lines of 'Things to change'
+//
+// lastly, there are also testUTC (normally 0), and allows to test what happends (LED colour/state) at a specificed time (entered as minutes from midnight).
+//
+// ****************************************************************************************************************************************************************
+// ****************************************************************************************************************************************************************
+
+
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <ESP8266HTTPClient.h>
 #include <FastLED.h>
 #include <ArduinoJson.h>
+#include <BlynkSimpleEsp8266.h>
+#define BLYNK_PRINT Serial
 
-
-//Put into platformio.ini
+//PlatformOI.ini
 //build_flags =
 //    -DSSID_NAME="SSID"
-//    -DPASSWORD_NAME="WIFI_Password"
+//    -DPASSWORD_NAME="password"
+//    -DBLYNKCERT_NAME="1234567890"
 
-
+//*************************
 //*** Things to change  ***
+//*************************
+
+#ifndef BLYNKCERT_NAME
+#define BLYNKCERT_NAME "1234567890" //Default BLYNK Cert if not build flag from PlatformIO doesn't work
+#endif
+
 #ifndef SSID_NAME
-#define SSID_NAME "WIFI_SSID"     //Default SSID if not build flag from PlatformOI doesn't work
+#define SSID_NAME "WIFI_SSID" //Default SSID if not build flag from PlatformIO doesn't work
 #endif
 
 #ifndef PASSWORD_NAME
-#define PASSWORD_NAME "WIFI_PASSWORD"     //Default SSID if not build flag from PlatformOI doesn't work
+#define PASSWORD_NAME "WIFI_PASSWORD" //Default WiFi Password if not build flag from PlatformIO doesn't work
 #endif
 
-#define NUM_LEDS_PER_STRIP 15 //LEDs per strip
-#define PIN_LED D7           //I.O pin on device going to LEDs
-#define COLOR_ORDER GRB      // if colors are mismatched; change this  //RBG //GRB
+#define NUM_LEDS_PER_STRIP 15 //Number of LEDs per strip
+#define PIN_LED D7            //I.O pin on ESP2866 device going to LEDs
+#define COLOR_ORDER GRB       // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB
 
-const IPAddress timeServer(203, 118, 151, 32);                                                    // Your local NTP server
-const int nzutc = 12;                                                                             //Country UTC offset, needed for UTC for day/night calc  (+12)  don't need to change for daylight saving as no needed for day/night
-const char *sunrise_api_request = "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762"; //API with your Long / Lat
+const IPAddress timeServer(203, 118, 151, 32);                                                    //Your local NTP server
+const int nzutc = 12;                                                                             //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
+const char *sunrise_api_request = "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762"; //API address with your Long / Lat
 
-const int green_nightlight = 255;   //Night RGB LED settings for night lightmode
-const int blue_nightlight = 255;    //Night RGB LED settings for night light mode
-const int red_nightlight = 255;     //Night RGB LED settings for night light mode
+int green_nightlight = 128;        //Night RGB LED settings for night lightmode
+int blue_nightlight = 0;           //Night RGB LED settings for night light mode
+int red_nightlight = 255;          //Night RGB LED settings for night light mode
 
-const int howbright = 255;          //0-255 LED Brightness level
+const int howbright = 255;         //0-255 LED Brightness level
 const int lightmode = 2;           //0 = day/night    1 = night light mode with sunrise/set colour changes    2 = night light mode without sunrise/set changes  (binary on/off)
+const int TARDIS = 1;              //Used for my TARDIS lamp (only works in lightmode = 0).  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
 
-const int NTPSecondstowait = 600;   //Wait between NTP pulls (sec)
+const int NTPSecondstowait = 600;  //Wait between NTP pulls (sec)
 const int APISecondstowait = 3600; //Wait between Sunrise API pulls (sec)
 
-const int LEDSecondstowait = 10;   //Wait between LED updates (sec)
+const int LEDSecondstowait = 5;    //Wait between LED updates (sec)
 const int minswithin = 60;         //Minutes within sunrise / sunset to begin the LED colour change sequence  (60 = phase starts 30mins before sunrise/set and end 30mins after)
-const int change = 1;              //Speed of LED change in tones
+const int change = 1;              //Speed of LED change in tones.  Recommend = 1
 
-const int testUTC = 0;          //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
-const int testDayNight = 1;      //*TESTING* If testUTC !=0 then this gets used for testing purposes
+const int testUTC = 0;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
+const int testDayNight = 1;        //*TESTING* If testUTC !=0 then this gets used for testing purposes
+
+//*************************
 //*** Things to change  ***
-
+//*************************
 
 
 //Gets SSID/PASSWORD from Platform.ini build flags
 const char ssid[] = xstr(SSID_NAME);          //  your network SSID (name)
 const char pass[] = xstr(PASSWORD_NAME);      // your network password
+const char auth[] = xstr(BLYNKCERT_NAME);     // your BLYNK Cert
 
 //LED Variables
 int green = 0; 
@@ -106,7 +145,10 @@ void Request_Time ();
 void setup()
 {
   Serial.begin(9600);
-
+  
+  //Blynk setup
+  Blynk.begin(auth, ssid, pass);
+  
   FastLED.addLeds<WS2811, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS_PER_STRIP);
 
   ConnectToAP(); //Connect to Wifi
@@ -137,6 +179,7 @@ void setup()
 //Do the main execution
 void loop()
 {
+  Blynk.run();
 
   //Get epoch from millis count.  May get over writtem by NTP pull
   epoch = epochstart + (millis() - startmillis) / 1000;
@@ -228,6 +271,7 @@ void DoTheLEDs()
     night = 1;
   }
 
+
   //****** For TESTING purposes only ******
   if (testUTC != 0){
   clock_minutes = testUTC;  // Force the UTC time to for testing purposes (do the LEDs work as expected at this time)
@@ -261,9 +305,9 @@ void DoTheLEDs()
 
   fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(red, green, blue));
 
-  if (lightmode == 0)
+  if (lightmode == 0 && TARDIS ==1)
   {
-    leds[NUM_LEDS_PER_STRIP - 1].setRGB(0, 0, 255); //Light on top of TARDIS but only if in day/night mode
+    leds[NUM_LEDS_PER_STRIP - 1].setRGB(0, 0, 255); //Light on top of TARDIS Blue - But only if in day/night mode and TARDIS ==1
   }
 
   FastLED.setBrightness(howbright);
@@ -661,6 +705,22 @@ String JSON_Extract(String lookfor)
   JsonObject &data = root["results"];
   return data[lookfor];
 }
+
+BLYNK_WRITE(V1) // Widget WRITEs to Virtual Pin
+{   
+  red_nightlight  = param.asInt(); // getting first value
+}
+
+BLYNK_WRITE(V2) // Widget WRITEs to Virtual Pin
+{   
+  green_nightlight = param.asInt(); // getting N value
+}
+
+BLYNK_WRITE(V3) // Widget WRITEs to Virtual Pin
+{   
+  blue_nightlight = param.asInt(); // getting second value
+  }
+
 
 void daynight()
 {
