@@ -56,11 +56,13 @@
 #define PASSWORD_NAME "WIFI_PASSWORD" //Default WiFi Password if not build flag from PlatformIO doesn't work
 #endif
 
-#define NUM_LEDS_PER_STRIP 15 //Number of LEDs per strip
+#define NUM_LEDS_PER_STRIP 4 //Number of LEDs per strip
 #define PIN_LED D7            //I.O pin on ESP2866 device going to LEDs
-#define COLOR_ORDER GRB       // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB
+#define COLOR_ORDER RBG       // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
-const IPAddress timeServer(203, 118, 151, 32);                                                    //Your local NTP server
+const char *NTPServerName = "0.nz.pool.ntp.org";    //Your local NTP server
+IPAddress timeServer;
+
 const int nzutc = 12;                                                                             //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
 const char *sunrise_api_request = "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762"; //API address with your Long / Lat
 
@@ -69,7 +71,7 @@ int blue_nightlight = 0;           //Night RGB LED settings for night light mode
 int red_nightlight = 255;          //Night RGB LED settings for night light mode
 
 const int howbright = 255;         //0-255 LED Brightness level
-const int lightmode = 2;           //0 = day/night    1 = night light mode with sunrise/set colour changes    2 = night light mode without sunrise/set changes  (binary on/off)
+const int lightmode = 0;           //0 = day/night (TARDIS)    1 = night light mode with sunrise/set colour changes    2 = night light mode without sunrise/set changes  (binary on/off)
 const int TARDIS = 1;              //Used for my TARDIS lamp (only works in lightmode = 0).  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
 
 const int NTPSecondstowait = 600;  //Wait between NTP pulls (sec)
@@ -497,6 +499,7 @@ void DecodeEpoch(unsigned long currentTime)
 void Request_Time()
 {
   Serial.println("Getting Time");
+  WiFi.hostByName(NTPServerName, timeServer);
   sendNTPpacket(timeServer); // send an NTP packet to a time server
 }
 
