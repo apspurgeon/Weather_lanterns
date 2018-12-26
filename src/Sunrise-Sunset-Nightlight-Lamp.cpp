@@ -35,9 +35,9 @@
 #include <ArduinoJson.h> 
 #include <WiFiManager.h>
 #include <DNSServer.h>
-#include <BlynkSimpleEsp8266.h>
+//#include <BlynkSimpleEsp8266.h>
 #include <FS.h>
-#define BLYNK_PRINT Serial
+//#define BLYNK_PRINT Serial
 
 //if using build flags for WiFi credentials
 //platformio.ini
@@ -67,9 +67,9 @@
 #endif
 */
 
-#define NUM_LEDS_PER_STRIP 4  //Number of LEDs per strip
-#define PIN_LED D7            //I.O pin on ESP2866 device going to LEDs
-#define COLOR_ORDER RGB       // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
+#define NUM_LEDS_PER_STRIP 4      //Number of LEDs per strip
+#define PIN_LED D7                //I.O pin on ESP2866 device going to LEDs
+#define COLOR_ORDER RGB           // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
 String HTTPfilename = "APIaddress.txt";             //Filename for storing Sunrise API HTTP address in SPIFFS
 const char *NTPServerName = "0.nz.pool.ntp.org";    //Your local NTP server
@@ -80,7 +80,7 @@ int blue_nightlight = 0;           //Night RGB LED settings for night light mode
 int red_nightlight = 255;          //Night RGB LED settings for night light mode
 
 const int howbright = 255;         //0-255 LED Brightness level
-const int lightmode = 0;           //0 = day/night (TARDIS)    1 = night light mode with sunrise/set colour changes    2 = night light mode without sunrise/set changes  (binary on/off)
+const int lightmode = 0;           //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
 const int TARDIS = 1;              //Used for my TARDIS lamp (only works in lightmode = 0).  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
 
 const int NTPSecondstowait = 600;  //Wait between NTP pulls (sec)
