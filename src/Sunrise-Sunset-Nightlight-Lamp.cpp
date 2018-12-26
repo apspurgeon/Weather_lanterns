@@ -24,26 +24,36 @@
 // ****************************************************************************************************************************************************************
 // ****************************************************************************************************************************************************************
 
+#define xstr(s) str(s)
+#define str(s) #s
 
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <ESP8266HTTPClient.h>
 #include <FastLED.h>
-#include <ArduinoJson.h>
+#include <ArduinoJson.h> 
+#include <WiFiManager.h>
+#include <DNSServer.h>
 #include <BlynkSimpleEsp8266.h>
+#include <FS.h>
 #define BLYNK_PRINT Serial
 
-//PlatformOI.ini
+//if using build flags for WiFi credentials
+//platformio.ini
 //build_flags =
 //    -DSSID_NAME="SSID"
 //    -DPASSWORD_NAME="password"
 //    -DBLYNKCERT_NAME="1234567890"
 
+
+
 //*************************
 //*** Things to change  ***
 //*************************
 
+/*   Only use if hard coding SSID/Password or build flags (platformio).  Checks if build flags work, if not then allows for hard coding credentials
+//  If using WifiManager to collect credentials then comment this section out.
 #ifndef BLYNKCERT_NAME
 #define BLYNKCERT_NAME "1234567890" //Default BLYNK Cert if not build flag from PlatformIO doesn't work
 #endif
@@ -55,16 +65,15 @@
 #ifndef PASSWORD_NAME
 #define PASSWORD_NAME "WIFI_PASSWORD" //Default WiFi Password if not build flag from PlatformIO doesn't work
 #endif
+*/
 
-#define NUM_LEDS_PER_STRIP 4 //Number of LEDs per strip
+#define NUM_LEDS_PER_STRIP 4  //Number of LEDs per strip
 #define PIN_LED D7            //I.O pin on ESP2866 device going to LEDs
-#define COLOR_ORDER RBG       // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
+#define COLOR_ORDER RGB       // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
+String HTTPfilename = "APIaddress.txt";             //Filename for storing Sunrise API HTTP address in SPIFFS
 const char *NTPServerName = "0.nz.pool.ntp.org";    //Your local NTP server
-IPAddress timeServer;
-
-const int nzutc = 12;                                                                             //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
-const char *sunrise_api_request = "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762"; //API address with your Long / Lat
+const int nzutc = 12;              //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
 
 int green_nightlight = 128;        //Night RGB LED settings for night lightmode
 int blue_nightlight = 0;           //Night RGB LED settings for night light mode
@@ -85,27 +94,26 @@ const int testUTC = 0;             //*TESTING* Normal condition =0.    Force a U
 const int testDayNight = 1;        //*TESTING* If testUTC !=0 then this gets used for testing purposes
 
 //*************************
-//*** Things to change  ***
+//*** Things to change  *** 
 //*************************
 
 
-//Gets SSID/PASSWORD from Platform.ini build flags
-const char ssid[] = xstr(SSID_NAME);          //  your network SSID (name)
-const char pass[] = xstr(PASSWORD_NAME);      // your network password
-const char auth[] = xstr(BLYNKCERT_NAME);     // your BLYNK Cert
 
-//LED Variables
-int green = 0; 
-int blue = 0;
-int red = 0;
 
-const int green_daynight = 128;  //Day RGB LED settings for day/night mode (Yellow)
-const int blue_daynight = 0;     //Day RGB LED settings for day/night mode (Yellow)
-const int red_daynight = 255;    //Day RGB LED settings for day/night mode (Yellow)
+//Gets SSID/PASSWORD from platformio.ini build flags.  
+//Comment one or the other out in the following  (e.g Build flags vs Wifi Manager)
+//const char ssid[] = xstr(SSID_NAME);          //gets ssid from build flags
+const char ssid[] = "";                         //define ssid or the ConnectAP function errors (even though not used when using WifiManager)
+//const char pass[] = xstr(PASSWORD_NAME);      //gets pass from build flags
+const char pass[] = "";                         //define pass or the ConnectAP function errors (even though not used when using WifiManager)
+//const char auth[] = xstr(BLYNKCERT_NAME);       // your BLYNK Cert from build flags
+
 
 //Wifi and internet variables
 const unsigned int localPort = 2390; // local port to listen for UDP packets
 WiFiUDP udp;                         // A UDP instance to let us send and receive packets over UDP
+char sunrise_api_request[100];       //It should end up containing an adress like this "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762";
+IPAddress timeServer;
 
 //NTP and Time variables
 int RequestedTime = 0, TimeCheckLoop = 0;
@@ -126,16 +134,27 @@ int h_sunrise, hour_sunrise, minute_sunrise;
 int sunrise_minutes, nzsunrise_minutes; //Minutes from midnight
 int SR_Phase = 0;                       //1 = in Sunrise phase (30 mins either side if minwithin = 60mins)
 int h_sunset, hour_sunset, minute_sunset, sunset_minutes, nzsunset_minutes;
-int SS_Phase = 0;  //1 = in Sunset phase (30 mins either side if minwithin = 60mins)
-int hourtomin = 0; //Used to convert hours into total minutes
-float LED_phase;   //0-255 in the phase of sunrise/set   0=begining 255=end
+int SS_Phase = 0;                       //1 = in Sunset phase (30 mins either side if minwithin = 60mins)
+int hourtomin = 0;                      //Used to convert hours into total minutes
+float LED_phase;                        //0-255 in the phase of sunrise/set   0=begining 255=end
 char SR_AMPM[1], SS_AMPM[1];
 String AMPM, sunAPIresponse;
-struct CRGB leds[NUM_LEDS_PER_STRIP]; //initiate FastLED with number of LEDs
+struct CRGB leds[NUM_LEDS_PER_STRIP];   //initiate FastLED with number of LEDs
+String JSON_Extract(String);
 
+//LED Variables. Hold the value (0-255) of each primary colour
+int green = 0; 
+int blue = 0;
+int red = 0;
+
+//What yellow looks like for day time
+const int green_daynight = 128;  //Day RGB LED settings for day/night mode (Yellow)
+const int blue_daynight = 0;     //Day RGB LED settings for day/night mode (Yellow)
+const int red_daynight = 255;    //Day RGB LED settings for day/night mode (Yellow)
+
+//Functions declared
 void nightlight ();
 void daynight ();
-String JSON_Extract(String);
 void API_Request ();
 void DoTheLEDs ();
 bool Check_Time ();
@@ -143,17 +162,24 @@ void DecodeEpoch (unsigned long);
 void sendNTPpacket (const IPAddress &address);
 void ConnectToAP ();
 void Request_Time ();
+void checkreset();
+void WiFi_and_Credentials();
+
+
 
 void setup()
 {
   Serial.begin(9600);
-  
-  //Blynk setup
-  Blynk.begin(auth, ssid, pass);
-  
-  FastLED.addLeds<WS2811, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS_PER_STRIP);
 
-  ConnectToAP(); //Connect to Wifi
+  pinMode(0, INPUT);          //GPIO0 (D3) to GND to reset ESP2866
+ 
+  FastLED.addLeds<WS2811, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS_PER_STRIP);      //Initialise the LEDs
+
+  WiFi_and_Credentials();     //Calls WiFi function to initiate.  either uses WifiManager to get Wifi and Longitude/Latitude data (And store API URL as SPIFFS file.)  r Standard WiFi connection with build flags.
+
+  //Blynk setup (if being used).
+  //Blynk.begin(auth, ssid, pass);
+
 
   //Initiate time
   Serial.println("Starting UDP");
@@ -178,19 +204,25 @@ void setup()
   API_Request();          //Get sunrise/sunset times
 }
 
-//Do the main execution
+
+
+//Do the main execution loop
 void loop()
+
 {
-  Blynk.run();
+  //Blynk.run();          //If Blynk being used
+  
+  checkreset();           //Has the GPIO (D3) been taken low to reset WiFiManager / clears SPIFFS?
 
   //Get epoch from millis count.  May get over writtem by NTP pull
   epoch = epochstart + (millis() - startmillis) / 1000;
 
-  //Check if it's time to display to get NTP time
+  //Check if it's time to display to get NTP time by checking Millis past against the wait period defined.
+  //NTP pull is done periodically, counting Millis by internal count is very accurate so NTP not constantly needed.
   int SecondsSinceLastNTP = (millis() - LastNTP) / 1000; //How many seconds since LastNTP pull
   if (SecondsSinceLastNTP > NTPSeconds_to_wait)
   {
-    Request_Time(); //Get the time
+    Request_Time();         //Get the time
     delay(2000);
     while (!Check_Time())
     { //If no time recieved then do this
@@ -203,6 +235,7 @@ void loop()
       }
     }
 
+
     //Time confirmed received and more than wait period to pull NTP / Sunrise time
     LastNTP = millis(); //Set the LastNTP time to now - resets the wait time
 
@@ -211,12 +244,12 @@ void loop()
     Serial.println();
 
     yield();
-    DecodeEpoch(epoch + SecondsSinceLastNTP); //Turn epoch time into Hours Minutes Seconds.  Work out timing for LEDs.  Must go after API request
-    NTPSeconds_to_wait = NTPSecondstowait;    //Over write the initial wait period (1 sec) to the ongoing period (120 sec)
+    DecodeEpoch(epoch + SecondsSinceLastNTP);     //Turn epoch time into Hours Minutes Seconds.  Work out timing for LEDs.  Must go after API request
+    NTPSeconds_to_wait = NTPSecondstowait;        //Over write the initial wait period (1 sec) to the ongoing period (120 sec)
   }
 
   //Check if it's time to get Sunrise/Set times
-  int SecondsSinceLastAPI = (millis() - LastAPI) / 1000; //How many seconds since Last API pull
+  int SecondsSinceLastAPI = (millis() - LastAPI) / 1000;      //How many seconds since Last API pull
   if (SecondsSinceLastAPI > APISecondstowait)
   {
     LastAPI = millis();
@@ -225,20 +258,38 @@ void loop()
   }
 
   //Check if it's time to display LEDs
-  int SecondsSinceLastLED = (millis() - LastLED) / 1000; //How many seconds since Last LED update
+  int SecondsSinceLastLED = (millis() - LastLED) / 1000;    //How many seconds since Last LED update
   if (SecondsSinceLastLED > LEDSecondstowait)
   {
     LastLED = millis();
-    DoTheLEDs(); //Set the LED colours based on the Time and the Sun position
+    DoTheLEDs();      //Set the LED colours based on the Time and the Sun position
     yield();
-  }
+  }  
 }
 
+
+
+//Check if reset button pressed.  D3 / GPIO0 held to ground.
+void checkreset(){
+    if (digitalRead(0) == 0){
+      delay(500);             //500ms for button bounce
+      if (digitalRead(0) == 0){
+    Serial.println("** RESET **");
+    Serial.println("** RESET **");
+    Serial.println("** RESET **");
+      SPIFFS.remove("\" & HTTPfilename");
+      SPIFFS.format();
+      WiFi.disconnect();
+    delay(2500);
+      ESP.restart();
+    }
+      }
+}
+
+
+//Calculate LED colours phases on the phase of the sun using sunrise API data and NTP time.
 void DoTheLEDs()
 {
-
-  //Set the LED lights based on the NTP time and the Sunrise/Sunset time
-
   //Check for sunrise.  Clock_minutes is time in minutes from midnight
   if (clock_minutes >= (sunrise_minutes - (minswithin / 2)) && clock_minutes <= (sunrise_minutes + (minswithin / 2)))
   {
@@ -263,7 +314,6 @@ void DoTheLEDs()
 
   //if it's not in sunrise or sunset sequence then find out if it's day (yellow) or night (blue) and set colour
   //Using nzutc estimate (don't care about daylight saving) for day or night
-
   if (nzclock_minutes > nzsunrise_minutes && nzclock_minutes < nzsunset_minutes)
   {
     night = 0;
@@ -292,7 +342,7 @@ void DoTheLEDs()
   Serial.println(sunset_minutes - clock_minutes - int(minswithin / 2));
   Serial.print("Mins to Sunrise phase = ");
   Serial.println(sunrise_minutes - clock_minutes - int(minswithin / 2));
-  Serial.println("");
+  
 
   //call function to select LED colours for either all day/night or just nightlight
   if (lightmode == 0)
@@ -329,7 +379,9 @@ void DoTheLEDs()
   Serial.println();
 }
 
-//Get Time
+
+
+//Update the time
 void DecodeEpoch(unsigned long currentTime)
 {
   // print the raw epoch time from NTP server
@@ -380,9 +432,9 @@ void DecodeEpoch(unsigned long currentTime)
   Serial.println(second);
   Serial.println();
 
-  //*******************
+  
 
-  //Work out Hours/min into minutes from midnight
+  //Work out Hours/min into minutes from midnight to Calculate if it's AM or PM time
   hourtomin = hour;
 
   //PM add 12
@@ -495,6 +547,8 @@ void DecodeEpoch(unsigned long currentTime)
   Serial.println();
 }
 
+
+
 //Get time from NTP Server
 void Request_Time()
 {
@@ -597,7 +651,9 @@ bool Check_Time() //This returns a bool value based on UDP time being received a
   }
 }
 
-void sendNTPpacket(const IPAddress &address) // send an NTP request to the time server at the given address
+
+// send an NTP request to the time server at the given address
+void sendNTPpacket(const IPAddress &address) 
 {
   Serial.println("sending NTP packet");
   // set all bytes in the buffer to 0
@@ -621,14 +677,16 @@ void sendNTPpacket(const IPAddress &address) // send an NTP request to the time 
   udp.endPacket();
 }
 
+
+// Get data from Sunrise API HTTP address
 void API_Request()
-// Start api sunrise-sunset
+
 {
   HTTPClient http;
   char buff[400];
 
-  Serial.print("Getting Sunrise API data");
-  Serial.println();
+  Serial.print("Getting Sunrise API data with: ");
+  Serial.println(sunrise_api_request);
   http.begin(sunrise_api_request);
 
   int httpCode = http.GET(); //Serial.print("[HTTP] GET...\n");  Start connection and send HTTP header
@@ -671,6 +729,100 @@ void API_Request()
   http.end();
 }
 
+
+//Connect to the WiFi and manage credentials
+void WiFi_and_Credentials()
+{
+  //2 way to get WiFi.  ConnectToAP uses variables from build flags (platformio) or hard coded. 
+  //WiFiManager will check if WiFi credentials are known (in Flash memory).  If not it will stary a webserver to collect details from user
+  
+  //Use one of the follow lines depending on approach (build flags vs WiFiManager)
+  // ConnectToAP();           //Connect to Wifi (if not using Wifi Manager approach)
+  WiFiManager wifiManager;  
+
+  //SPIFFs section to Read and Write the saved credentials in Flash memory
+  //Check if APIaddress.txt exists.  If not create it and store the http address for sunrise API, if yes read it.
+  
+  if(SPIFFS.begin())
+  {
+    Serial.println("SPIFFS Initialize....ok");
+  }
+  else
+  {
+    Serial.println("SPIFFS Initialization...failed");
+  }
+
+  if (SPIFFS.exists("\" & HTTPfilename") == true){
+    Serial.println("File already exisits.  Read stored data.");
+
+  //Read File data
+  File f = SPIFFS.open("\" & HTTPfilename", "r");
+  
+  if (!f) {
+    Serial.println("file open failed");
+  }
+  else
+  {
+      Serial.println("Reading Data from File:");
+      //Data from file
+
+      size_t size = f.size();
+
+      f.readBytes(sunrise_api_request, size);
+
+      f.close();  //Close file
+      Serial.print("READ: sunrise_api_request = ");
+        Serial.println(sunrise_api_request);
+      Serial.println("File Closed");
+
+      //WiFiManager will read stored WiFi Data, if it can't connect it will create a website to get new credentials.
+      wifiManager.autoConnect("WiFi_Lamp");    
+    }
+  }
+
+  else {
+    Serial.println("Filename DOESN'T exisit");
+
+  //If file doesn't exist, get details from the user with wifimanager website
+  //create http address and store in APIaddresst.txt file
+  
+  WiFiManagerParameter custom_longitude("Longitude", "Longitude", "longitude", 10);
+    WiFiManagerParameter custom_latitude("Latitude", "Latitude", "latitude", 10);
+
+    wifiManager.addParameter(&custom_longitude);
+  wifiManager.addParameter(&custom_latitude);
+
+  //WiFiManager will read stored WiFi Data, if it can't connect it will create a website to get new credentials
+  wifiManager.autoConnect("WiFi_Lamp");
+  
+
+  //Check if new http address needed to be written to file.  If yes, create and write.
+  //Example: sunrise_api_request = "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762" 
+  sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=%s&lng=%s",  + custom_latitude.getValue(), custom_longitude.getValue());
+
+  Serial.print("New http adress for Sunrise/set API = ");
+    Serial.println(sunrise_api_request);
+
+
+  //Create New File And Write Data to It
+  //w=Write Open file for writing
+  File f = SPIFFS.open("\" & HTTPfilename", "w");
+  
+  if (!f) {
+    Serial.println("file open failed");
+    }
+  else
+    {
+      //Write data to file
+      Serial.println("Writing Data to File");
+      f.print(sunrise_api_request);
+        Serial.println("New file written");
+      f.close();  //Close file
+    }
+      }
+}
+
+
 void ConnectToAP()
 {
   Serial.println("Attempting to Connect");
@@ -700,6 +852,7 @@ void ConnectToAP()
   }
 }
 
+
 //JSON Function
 String JSON_Extract(String lookfor)
 {
@@ -709,6 +862,7 @@ String JSON_Extract(String lookfor)
   return data[lookfor];
 }
 
+/*
 BLYNK_WRITE(V1) // Widget WRITEs to Virtual Pin
 {   
   red_nightlight  = param.asInt(); // getting first value
@@ -723,6 +877,8 @@ BLYNK_WRITE(V3) // Widget WRITEs to Virtual Pin
 {   
   blue_nightlight = param.asInt(); // getting second value
   }
+*/
+
 
 
 void daynight()
@@ -892,3 +1048,4 @@ void nightlight()
     red = red_nightlight;
   }
 }
+
