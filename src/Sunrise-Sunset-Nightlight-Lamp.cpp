@@ -35,8 +35,8 @@
 #include <ArduinoJson.h> 
 #include <WiFiManager.h>
 #include <DNSServer.h>
-//#include <BlynkSimpleEsp8266.h>
 #include <FS.h>
+//#include <BlynkSimpleEsp8266.h>
 //#define BLYNK_PRINT Serial
 
 //if using build flags for WiFi credentials
@@ -72,6 +72,7 @@
 #define COLOR_ORDER RGB           // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
 String HTTPfilename = "APIaddress.txt";             //Filename for storing Sunrise API HTTP address in SPIFFS
+String Modefilename = "Mode.txt";                   //Filename for storing Sunrise Mode in SPIFFS
 const char *NTPServerName = "0.nz.pool.ntp.org";    //Your local NTP server
 const int nzutc = 12;              //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
 
@@ -80,7 +81,8 @@ int blue_nightlight = 0;           //Night RGB LED settings for night light mode
 int red_nightlight = 255;          //Night RGB LED settings for night light mode
 
 const int howbright = 255;         //0-255 LED Brightness level
-const int lightmode = 0;           //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
+int lightmode = 0;                 //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
+char mode [4];
 const int TARDIS = 1;              //Used for my TARDIS lamp (only works in lightmode = 0).  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
 
 const int NTPSecondstowait = 600;  //Wait between NTP pulls (sec)
@@ -755,7 +757,7 @@ void WiFi_and_Credentials()
   if (SPIFFS.exists("\" & HTTPfilename") == true){
     Serial.println("File already exisits.  Read stored data.");
 
-  //Read File data
+  //Read HTTP addresss file data
   File f = SPIFFS.open("\" & HTTPfilename", "r");
   
   if (!f) {
@@ -771,9 +773,32 @@ void WiFi_and_Credentials()
       f.readBytes(sunrise_api_request, size);
 
       f.close();  //Close file
-      Serial.print("READ: sunrise_api_request = ");
-        Serial.println(sunrise_api_request);
+      Serial.printf("Read http adress for Sunrise/set API = %s\n", sunrise_api_request);
       Serial.println("File Closed");
+
+
+//Read Mode file data
+  File f = SPIFFS.open("\" & Modefilename", "r");
+  
+  if (!f) {
+    Serial.println("file open failed");
+  }
+  else
+  {
+      Serial.println("Reading Data from File:");
+      //Data from file
+
+      size_t size = f.size();
+
+      f.readBytes(mode, size);
+
+      f.close();  //Close file
+      Serial.printf("Read Lamp Mode  = %s\n", mode);
+      Serial.println("File Closed");
+  }
+
+
+
 
       //WiFiManager will read stored WiFi Data, if it can't connect it will create a website to get new credentials.
       wifiManager.autoConnect("WiFi_Lamp");    
@@ -788,9 +813,11 @@ void WiFi_and_Credentials()
   
   WiFiManagerParameter custom_longitude("Longitude", "Longitude", "longitude", 10);
     WiFiManagerParameter custom_latitude("Latitude", "Latitude", "latitude", 10);
+  WiFiManagerParameter custom_mode("Mode", "Mode", "Mode", 4);
 
     wifiManager.addParameter(&custom_longitude);
   wifiManager.addParameter(&custom_latitude);
+    wifiManager.addParameter(&custom_mode);
 
   //WiFiManager will read stored WiFi Data, if it can't connect it will create a website to get new credentials
   wifiManager.autoConnect("WiFi_Lamp");
@@ -798,28 +825,58 @@ void WiFi_and_Credentials()
 
   //Check if new http address needed to be written to file.  If yes, create and write.
   //Example: sunrise_api_request = "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762" 
+  //Mode of the Lamp (e.g 0, 1, 2) as separate files in SPIFFS
   sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=%s&lng=%s",  + custom_latitude.getValue(), custom_longitude.getValue());
-
-  Serial.print("New http adress for Sunrise/set API = ");
-    Serial.println(sunrise_api_request);
-
+  sprintf (mode, "%s", + custom_mode.getValue());
 
   //Create New File And Write Data to It
   //w=Write Open file for writing
   File f = SPIFFS.open("\" & HTTPfilename", "w");
   
   if (!f) {
-    Serial.println("file open failed");
+    Serial.println("HTTP file open failed");
     }
   else
     {
       //Write data to file
-      Serial.println("Writing Data to File");
+      Serial.println("Writing Data to HTTP File");
       f.print(sunrise_api_request);
         Serial.println("New file written");
       f.close();  //Close file
     }
+
+
+  //Create New File And Write Data to It
+  //w=Write Open file for writing
+  File g = SPIFFS.open("\" & Modefilename", "w");
+  
+  if (!g) {
+    Serial.println("Mode file open failed");
+    }
+  else
+    {
+      //Write data to file
+      Serial.println("Writing Data to Mode File");
+      g.print(mode);
+        Serial.println("New file written");
+      g.close();  //Close file
+    }
       }
+
+
+  //Get light mode from saved file and turn into an Int and check it's either 0, 1 or 2
+  char buffer[0];
+  buffer[0] = mode[0];
+  lightmode = atoi(buffer);
+
+    if (lightmode <0 || lightmode >2){
+      Serial.println("Light mode incorrect - overriding");
+      lightmode = 0;
+    }
+
+      Serial.print("Light mode used = ");
+      Serial.println(lightmode);
+
 }
 
 
