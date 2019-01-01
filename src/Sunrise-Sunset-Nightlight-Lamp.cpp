@@ -67,14 +67,15 @@
 #endif
 */
 
-#define NUM_LEDS_PER_STRIP 4      //Number of LEDs per strip
+#define NUM_LEDS_PER_STRIP 13      //Number of LEDs per strip
 #define PIN_LED D7                //I.O pin on ESP2866 device going to LEDs
-#define COLOR_ORDER RGB           // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
+#define COLOR_ORDER GRB           // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
 String HTTPfilename = "APIaddress.txt";             //Filename for storing Sunrise API HTTP address in SPIFFS
 String Modefilename = "Mode.txt";                   //Filename for storing Sunrise Mode in SPIFFS
+String UTCfilename = "UTC.txt";
 const char *NTPServerName = "0.nz.pool.ntp.org";    //Your local NTP server
-const int nzutc = 12;              //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
+int myUTC = 12;              //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
 
 int green_nightlight = 128;        //Night RGB LED settings for night lightmode
 int blue_nightlight = 0;           //Night RGB LED settings for night light mode
@@ -115,6 +116,7 @@ const char pass[] = "";                         //define pass or the ConnectAP f
 const unsigned int localPort = 2390; // local port to listen for UDP packets
 WiFiUDP udp;                         // A UDP instance to let us send and receive packets over UDP
 char sunrise_api_request[100];       //It should end up containing an adress like this "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762";
+char UTC[3];
 IPAddress timeServer;
 
 //NTP and Time variables
@@ -127,15 +129,16 @@ byte packetBuffer[NTP_PACKET_SIZE];                                             
 unsigned long epoch = 0, lastepoch = 0, LastNTP = 0, LastAPI, LastLED, epochstart, startmillis; //Unix time in seconds
 int lastepochcount = 0, totalfailepoch = 0;
 int hour, minute, second;           //UTC time
-int clock_minutes, nzclock_minutes; //Minutes from midnight
+int clock_minutes, Myclock_minutes; //Minutes from midnight
 int NTPSeconds_to_wait = 1;         // -  Initial wait time between NTP/Sunrise pulls (1 sec)
 String clock_AMPM;
+int printNTP=0;                     //Set to 1 when a NTP is pull and then used to determine if Time is printed during the loop (e.g don't using a Millis)
 
 //Sunrise - Sunset API variables
 int h_sunrise, hour_sunrise, minute_sunrise;
-int sunrise_minutes, nzsunrise_minutes; //Minutes from midnight
+int sunrise_minutes, Mysunrise_minutes; //Minutes from midnight
 int SR_Phase = 0;                       //1 = in Sunrise phase (30 mins either side if minwithin = 60mins)
-int h_sunset, hour_sunset, minute_sunset, sunset_minutes, nzsunset_minutes;
+int h_sunset, hour_sunset, minute_sunset, sunset_minutes, Mysunset_minutes;
 int SS_Phase = 0;                       //1 = in Sunset phase (30 mins either side if minwithin = 60mins)
 int hourtomin = 0;                      //Used to convert hours into total minutes
 float LED_phase;                        //0-255 in the phase of sunrise/set   0=begining 255=end
@@ -182,9 +185,30 @@ void setup()
   //Blynk setup (if being used).
   //Blynk.begin(auth, ssid, pass);
 
+  //Test the LEDs
+  fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(255, 0, 0));
+    FastLED.setBrightness(howbright);
+  FastLED.show();
+  Serial.println("TEST:  Red");
+  delay(1000);
+
+  fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(0, 255, 0));
+    FastLED.setBrightness(howbright);
+  FastLED.show();
+  Serial.println("TEST:  Green");
+  delay(1000);
+  
+  fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(0, 0, 255));
+    FastLED.setBrightness(howbright);
+  FastLED.show();  
+  Serial.println("TEST:  Blue");
+  delay(1000);  
+
+  fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(0, 0, 0));
+    FastLED.setBrightness(howbright);
+  FastLED.show();
 
   //Initiate time
-  Serial.println("Starting UDP");
   udp.begin(localPort);
   Serial.print("Local port: ");
   Serial.println(udp.localPort());
@@ -204,6 +228,7 @@ void setup()
   epochstart = epoch;     //epoch pulled from NTP server, use initial epoch to set starting point for epochmillis
   startmillis = millis(); //get starting point for millis
   API_Request();          //Get sunrise/sunset times
+
 }
 
 
@@ -218,6 +243,7 @@ void loop()
 
   //Get epoch from millis count.  May get over writtem by NTP pull
   epoch = epochstart + (millis() - startmillis) / 1000;
+  printNTP=0;
 
   //Check if it's time to display to get NTP time by checking Millis past against the wait period defined.
   //NTP pull is done periodically, counting Millis by internal count is very accurate so NTP not constantly needed.
@@ -225,6 +251,7 @@ void loop()
   if (SecondsSinceLastNTP > NTPSeconds_to_wait)
   {
     Request_Time();         //Get the time
+    printNTP=1;
     delay(2000);
     while (!Check_Time())
     { //If no time recieved then do this
@@ -246,9 +273,13 @@ void loop()
     Serial.println();
 
     yield();
-    DecodeEpoch(epoch + SecondsSinceLastNTP);     //Turn epoch time into Hours Minutes Seconds.  Work out timing for LEDs.  Must go after API request
     NTPSeconds_to_wait = NTPSecondstowait;        //Over write the initial wait period (1 sec) to the ongoing period (120 sec)
   }
+    //Epoch has been updated using NTP pull or counting Millis.  Now turn this into Clock_Minutes
+    DecodeEpoch(epoch + SecondsSinceLastNTP);     //Turn epoch time into Hours Minutes Seconds.  Work out timing for LEDs.  Must go after API request
+    //Serial.print("clock_minutes= ");
+      //Serial.println(clock_minutes);
+
 
   //Check if it's time to get Sunrise/Set times
   int SecondsSinceLastAPI = (millis() - LastAPI) / 1000;      //How many seconds since Last API pull
@@ -280,6 +311,8 @@ void checkreset(){
     Serial.println("** RESET **");
     Serial.println("** RESET **");
       SPIFFS.remove("\" & HTTPfilename");
+      SPIFFS.remove("\" & Modefilename");
+      SPIFFS.remove("\" & UTCfilename");      
       SPIFFS.format();
       WiFi.disconnect();
     delay(2500);
@@ -315,8 +348,8 @@ void DoTheLEDs()
   }
 
   //if it's not in sunrise or sunset sequence then find out if it's day (yellow) or night (blue) and set colour
-  //Using nzutc estimate (don't care about daylight saving) for day or night
-  if (nzclock_minutes > nzsunrise_minutes && nzclock_minutes < nzsunset_minutes)
+  //Using myUTC estimate (don't care about daylight saving) for day or night
+  if (Myclock_minutes > Mysunrise_minutes && Myclock_minutes < Mysunset_minutes)
   {
     night = 0;
   }
@@ -387,6 +420,7 @@ void DoTheLEDs()
 void DecodeEpoch(unsigned long currentTime)
 {
   // print the raw epoch time from NTP server
+   if (printNTP ==1){
   Serial.print("The epoch UTC time is ");
   Serial.print(epoch);
   Serial.println();
@@ -395,7 +429,7 @@ void DecodeEpoch(unsigned long currentTime)
   Serial.print("The UTC time is ");      // UTC is the time at Greenwich Meridian (GMT)
   Serial.print((epoch % 86400L) / 3600); // print the hour (86400 equals secs per day)
   Serial.print(':');
-
+  
   if (((epoch % 3600) / 60) < 10)
   {
     // In the first 10 minutes of each hour, we'll want a leading '0'
@@ -412,6 +446,7 @@ void DecodeEpoch(unsigned long currentTime)
   }
 
   Serial.println(epoch % 60); // print the second
+   }
   hour = (currentTime % 86400L) / 3600;
 
   minute = (currentTime % 3600) / 60;
@@ -425,6 +460,7 @@ void DecodeEpoch(unsigned long currentTime)
     clock_AMPM = "PM";
   }
 
+  if (printNTP ==1){
   Serial.println();
   Serial.print("Hour: ");
   Serial.print(hour);
@@ -433,7 +469,7 @@ void DecodeEpoch(unsigned long currentTime)
   Serial.print(",   Second: ");
   Serial.println(second);
   Serial.println();
-
+  }
   
 
   //Work out Hours/min into minutes from midnight to Calculate if it's AM or PM time
@@ -459,22 +495,24 @@ void DecodeEpoch(unsigned long currentTime)
 
   clock_minutes = ((hourtomin * 60) + minute);
 
-  //Get to NZ minutes for day/night calc
-  nzclock_minutes = clock_minutes + (nzutc * 60);
+  //Get to My minutes for day/night calc
+  Myclock_minutes = clock_minutes + (myUTC * 60);
 
-  if (nzclock_minutes > 1440)
+  if (Myclock_minutes > 1440)
   {
-    nzclock_minutes = nzclock_minutes - 1440;
+    Myclock_minutes = Myclock_minutes - 1440;
   }
 
+  if (printNTP ==1){
   Serial.print("Clock - Mins from midnight = ");
   Serial.println(clock_minutes);
-  Serial.print("NZ - Clock - Mins from midnight = ");
-  Serial.println(nzclock_minutes);
+  Serial.print("My - Clock - Mins from midnight = ");
+  Serial.println(Myclock_minutes);
   Serial.println();
   Serial.println("****************");
   Serial.println();
-
+  }
+  
   //Work out Hours/min into minutes from midnight
   hourtomin = hour_sunrise;
 
@@ -498,18 +536,20 @@ void DecodeEpoch(unsigned long currentTime)
 
   sunrise_minutes = ((hourtomin * 60) + minute_sunrise);
 
-  //Get to NZ minutes for day/night calc
-  nzsunrise_minutes = sunrise_minutes + (nzutc * 60);
+  //Get to My minutes for day/night calc
+  Mysunrise_minutes = sunrise_minutes + (myUTC * 60);
 
-  if (nzsunrise_minutes > 1440)
+  if (Mysunrise_minutes > 1440)
   {
-    nzsunrise_minutes = nzsunrise_minutes - 1440;
+    Mysunrise_minutes = Mysunrise_minutes - 1440;
   }
 
+  if (printNTP ==1){
   Serial.print("Sunrise - Mins from midnight = ");
   Serial.println(sunrise_minutes);
-  Serial.print("NZ - Sunrise - Mins from midnight = ");
-  Serial.println(nzsunrise_minutes);
+  Serial.print("My - Sunrise - Mins from midnight = ");
+  Serial.println(Mysunrise_minutes);
+  }
 
   //Work out Hours/min into minutes from midnight
   hourtomin = hour_sunset;
@@ -534,19 +574,21 @@ void DecodeEpoch(unsigned long currentTime)
 
   sunset_minutes = ((hourtomin * 60) + minute_sunset);
 
-  //Get to NZ minutes for day/night calc
-  nzsunset_minutes = sunset_minutes + (nzutc * 60);
+  //Get to My minutes for day/night calc
+  Mysunset_minutes = sunset_minutes + (myUTC * 60);
 
-  if (nzsunset_minutes > 1440)
+  if (Mysunset_minutes > 1440)
   {
-    nzsunset_minutes = nzsunset_minutes - 1440;
+    Mysunset_minutes = Mysunset_minutes - 1440;
   }
 
+  if (printNTP ==1){
   Serial.print("Sunset - Mins from midnight = ");
   Serial.println(sunset_minutes);
-  Serial.print("NZ - Sunset - Mins from midnight = ");
-  Serial.println(nzsunset_minutes);
+  Serial.print("My - Sunset - Mins from midnight = ");
+  Serial.println(Mysunset_minutes);
   Serial.println();
+  }
 }
 
 
@@ -765,7 +807,7 @@ void WiFi_and_Credentials()
   }
   else
   {
-      Serial.println("Reading Data from File:");
+      Serial.println("Reading Data from HTTP file:");
       //Data from file
 
       size_t size = f.size();
@@ -778,26 +820,45 @@ void WiFi_and_Credentials()
 
 
 //Read Mode file data
-  File f = SPIFFS.open("\" & Modefilename", "r");
+  File g = SPIFFS.open("\" & Modefilename", "r");
   
-  if (!f) {
+  if (!g) {
     Serial.println("file open failed");
   }
   else
   {
-      Serial.println("Reading Data from File:");
+      Serial.println("Reading Data from Mode file:");
       //Data from file
 
-      size_t size = f.size();
+      size_t size = g.size();
 
-      f.readBytes(mode, size);
+      g.readBytes(mode, size);
 
-      f.close();  //Close file
+      g.close();  //Close file
       Serial.printf("Read Lamp Mode  = %s\n", mode);
       Serial.println("File Closed");
   }
 
 
+//Read UTC file data
+  File h = SPIFFS.open("\" & UTCfilename", "r");
+  
+  if (!h) {
+    Serial.println("file open failed");
+  }
+  else
+  {
+      Serial.println("Reading Data from UTC file:");
+      //Data from file
+
+      size_t size = h.size();
+
+      h.readBytes(UTC, size);
+
+      h.close();  //Close file
+      Serial.printf("Read UTC  = %s\n", UTC);
+      Serial.println("File Closed");
+  }
 
 
       //WiFiManager will read stored WiFi Data, if it can't connect it will create a website to get new credentials.
@@ -811,25 +872,27 @@ void WiFi_and_Credentials()
   //If file doesn't exist, get details from the user with wifimanager website
   //create http address and store in APIaddresst.txt file
   
-  WiFiManagerParameter custom_longitude("Longitude", "Longitude", "longitude", 10);
-    WiFiManagerParameter custom_latitude("Latitude", "Latitude", "latitude", 10);
-  WiFiManagerParameter custom_mode("Mode", "Mode", "Mode", 4);
+  WiFiManagerParameter custom_longitude("Longitude", "Longitude", "", 10);
+    WiFiManagerParameter custom_latitude("Latitude", "Latitude", "", 10);
+  WiFiManagerParameter custom_mode("Mode", "Mode", "", 4);
+    WiFiManagerParameter custom_UTC("UTC", "UTC", "", 3);
 
     wifiManager.addParameter(&custom_longitude);
   wifiManager.addParameter(&custom_latitude);
     wifiManager.addParameter(&custom_mode);
+  wifiManager.addParameter(&custom_UTC);
 
   //WiFiManager will read stored WiFi Data, if it can't connect it will create a website to get new credentials
   wifiManager.autoConnect("WiFi_Lamp");
   
-
   //Check if new http address needed to be written to file.  If yes, create and write.
   //Example: sunrise_api_request = "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762" 
   //Mode of the Lamp (e.g 0, 1, 2) as separate files in SPIFFS
   sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=%s&lng=%s",  + custom_latitude.getValue(), custom_longitude.getValue());
   sprintf (mode, "%s", + custom_mode.getValue());
+  sprintf (UTC, "%s", + custom_UTC.getValue());
 
-  //Create New File And Write Data to It
+  //Create New HTTP File And Write Data to It
   //w=Write Open file for writing
   File f = SPIFFS.open("\" & HTTPfilename", "w");
   
@@ -846,7 +909,7 @@ void WiFi_and_Credentials()
     }
 
 
-  //Create New File And Write Data to It
+  //Create New Mode File And Write Data to It
   //w=Write Open file for writing
   File g = SPIFFS.open("\" & Modefilename", "w");
   
@@ -861,9 +924,25 @@ void WiFi_and_Credentials()
         Serial.println("New file written");
       g.close();  //Close file
     }
-      }
 
+  //Create New UTC File And Write Data to It
+  //w=Write Open file for writing
+  File h = SPIFFS.open("\" & UTCfilename", "w");
+  
+  if (!h) {
+    Serial.println("UTC file open failed");
+    }
+  else
+    {
+      //Write data to file
+      Serial.println("Writing Data to UTC File");
+      h.print(UTC);
+        Serial.println("New file written");
+      h.close();  //Close file
+    }  
+  }
 
+  //Check File content or web entered details and correct if needed
   //Get light mode from saved file and turn into an Int and check it's either 0, 1 or 2
   char buffer[0];
   buffer[0] = mode[0];
@@ -877,6 +956,20 @@ void WiFi_and_Credentials()
       Serial.print("Light mode used = ");
       Serial.println(lightmode);
 
+    //Get UTC from saved file and turn into an Int and check it's between 0-24
+    char buffer2[2];
+    buffer2[0] = UTC[0];
+    buffer2[1] = UTC[1];
+    buffer2[2] = UTC[2];
+    myUTC = atoi(buffer2);
+
+    if (myUTC < -12 || myUTC > 12){
+      Serial.println("UTC mode incorrect - overriding");
+      myUTC = 12;
+    }
+      Serial.print("UTC used = ");
+      Serial.println(myUTC);
+      
 }
 
 
