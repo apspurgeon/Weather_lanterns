@@ -68,23 +68,28 @@
 */
 
 #define NUM_LEDS_PER_STRIP 13      //Number of LEDs per strip
-#define PIN_LED D7                //I.O pin on ESP2866 device going to LEDs
-#define COLOR_ORDER GRB           // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
+#define PIN_LED D7                 //I.O pin on ESP2866 device going to LEDs
+#define COLOR_ORDER GRB            // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
-String HTTPfilename = "APIaddress.txt";             //Filename for storing Sunrise API HTTP address in SPIFFS
-String Modefilename = "Mode.txt";                   //Filename for storing Sunrise Mode in SPIFFS
-String UTCfilename = "UTC.txt";
-const char *NTPServerName = "0.nz.pool.ntp.org";    //Your local NTP server
-int myUTC = 12;              //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
+int flash_minswithin = 5;          //minutes within for flash  e.g 10 = 5 mins each side of the hour)
+float flash_factor = 0.2;          //Amount to lims lamp to (%)
+int flash_delay = 2;               //delay between LED flashes
 
 int green_nightlight = 128;        //Night RGB LED settings for night lightmode
 int blue_nightlight = 0;           //Night RGB LED settings for night light mode
 int red_nightlight = 255;          //Night RGB LED settings for night light mode
 
 const int howbright = 255;         //0-255 LED Brightness level
-int lightmode = 0;                 //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
-char mode [4];
-const int TARDIS = 1;              //Used for my TARDIS lamp (only works in lightmode = 0).  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
+
+String HTTPfilename = "APIaddress.txt";             //Filename for storing Sunrise API HTTP address in SPIFFS
+String Modefilename = "Mode.txt";                   //Filename for storing Sunrise Mode in SPIFFS
+String UTCfilename = "UTC.txt";
+
+//Lightmode, TARDIS, Longitude/Latitude and UTC are stated here but overwritten when webpage credentials are entered (if using WiFi Manager)
+const char *NTPServerName = "0.nz.pool.ntp.org";    //Your local NTP server
+int localUTC = 12;                                  //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
+int lightmode = 0;                                  //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (but off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
+int TARDIS = 1;                                     //Used for my TARDIS lamp.  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
 
 const int NTPSecondstowait = 600;  //Wait between NTP pulls (sec)
 const int APISecondstowait = 3600; //Wait between Sunrise API pulls (sec)
@@ -129,16 +134,22 @@ byte packetBuffer[NTP_PACKET_SIZE];                                             
 unsigned long epoch = 0, lastepoch = 0, LastNTP = 0, LastAPI, LastLED, epochstart, startmillis; //Unix time in seconds
 int lastepochcount = 0, totalfailepoch = 0;
 int hour, minute, second;           //UTC time
-int clock_minutes, Myclock_minutes; //Minutes from midnight
+int clock_minutes, local_clock_minutes; //Minutes from midnight
 int NTPSeconds_to_wait = 1;         // -  Initial wait time between NTP/Sunrise pulls (1 sec)
 String clock_AMPM;
 int printNTP=0;                     //Set to 1 when a NTP is pull and then used to determine if Time is printed during the loop (e.g don't using a Millis)
 
+//LED Flash variables
+int flash_phase = 0;               //If x minutes within top of hour flash the LEDs
+int flash = 0;                     //flash = 0 (no flash)  flash = 1 (flash) set by user
+float flash_working;               //working var
+int LastFlashEpoch;                //Used for tracking delay
+
 //Sunrise - Sunset API variables
 int h_sunrise, hour_sunrise, minute_sunrise;
-int sunrise_minutes, Mysunrise_minutes; //Minutes from midnight
+int sunrise_minutes, local_sunrise_minutes; //Minutes from midnight
 int SR_Phase = 0;                       //1 = in Sunrise phase (30 mins either side if minwithin = 60mins)
-int h_sunset, hour_sunset, minute_sunset, sunset_minutes, Mysunset_minutes;
+int h_sunset, hour_sunset, minute_sunset, sunset_minutes, local_sunset_minutes;
 int SS_Phase = 0;                       //1 = in Sunset phase (30 mins either side if minwithin = 60mins)
 int hourtomin = 0;                      //Used to convert hours into total minutes
 float LED_phase;                        //0-255 in the phase of sunrise/set   0=begining 255=end
@@ -146,6 +157,7 @@ char SR_AMPM[1], SS_AMPM[1];
 String AMPM, sunAPIresponse;
 struct CRGB leds[NUM_LEDS_PER_STRIP];   //initiate FastLED with number of LEDs
 String JSON_Extract(String);
+char mode [4];                          //Used to get input from webpage
 
 //LED Variables. Hold the value (0-255) of each primary colour
 int green = 0; 
@@ -297,9 +309,27 @@ void loop()
     LastLED = millis();
     DoTheLEDs();      //Set the LED colours based on the Time and the Sun position
     yield();
-  }  
-}
+  } 
 
+  //If in flash mode then do the flash routine
+  if (flash_phase == 1){
+
+  //Check if the required time has passed to flash
+  if (epoch - LastFlashEpoch >= flash_delay){
+    LastFlashEpoch = epoch;
+
+    FastLED.setBrightness(howbright * flash_working);
+    FastLED.show();
+    
+    if (flash_working == 1){
+      flash_working = flash_factor;
+    }
+    else {
+      flash_working = 1;
+    }  
+  }
+}
+}
 
 
 //Check if reset button pressed.  D3 / GPIO0 held to ground.
@@ -307,6 +337,11 @@ void checkreset(){
     if (digitalRead(0) == 0){
       delay(500);             //500ms for button bounce
       if (digitalRead(0) == 0){
+
+  //LEDs off 
+  fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(0, 0, 0));
+    FastLED.setBrightness(howbright);
+      FastLED.show();        
     Serial.println("** RESET **");
     Serial.println("** RESET **");
     Serial.println("** RESET **");
@@ -315,16 +350,28 @@ void checkreset(){
       SPIFFS.remove("\" & UTCfilename");      
       SPIFFS.format();
       WiFi.disconnect();
+
     delay(2500);
       ESP.restart();
     }
       }
-}
+} 
 
 
 //Calculate LED colours phases on the phase of the sun using sunrise API data and NTP time.
 void DoTheLEDs()
 {
+
+  //Check for x minutes within top of 
+  if (flash == 1){
+  if (minute > (60 - (flash_minswithin)) || minute < (0 + (flash_minswithin))){
+    flash_phase = 1;
+  }
+  else {
+    flash_phase = 0;
+  }
+}
+
   //Check for sunrise.  Clock_minutes is time in minutes from midnight
   if (clock_minutes >= (sunrise_minutes - (minswithin / 2)) && clock_minutes <= (sunrise_minutes + (minswithin / 2)))
   {
@@ -348,8 +395,8 @@ void DoTheLEDs()
   }
 
   //if it's not in sunrise or sunset sequence then find out if it's day (yellow) or night (blue) and set colour
-  //Using myUTC estimate (don't care about daylight saving) for day or night
-  if (Myclock_minutes > Mysunrise_minutes && Myclock_minutes < Mysunset_minutes)
+  //Using Local UTC estimate (don't care about daylight saving) for day or night
+  if (local_clock_minutes > local_sunrise_minutes && local_clock_minutes < local_sunset_minutes)
   {
     night = 0;
   }
@@ -366,7 +413,16 @@ void DoTheLEDs()
   }
   //****** For TESTING purposes only ******
 
-
+  Serial.println();
+  Serial.print("Hour: ");
+  Serial.print(hour);
+  Serial.print(",   Minute: ");
+  Serial.print(minute);
+  Serial.print(",   Second: ");
+  Serial.println(second);
+  
+  Serial.print("flash_phase = ");
+  Serial.println(flash_phase);
   Serial.print("night = ");
   Serial.println(night);
   Serial.print("Sunrise phase = ");
@@ -392,13 +448,31 @@ void DoTheLEDs()
 
   fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(red, green, blue));
 
-  if (lightmode == 0 && TARDIS ==1)
+  //Set the top light:  0=Same as other LEDs, 1=Red, 2=Green, 3=Blue, 4=White
+  if (TARDIS ==1)
   {
-    leds[NUM_LEDS_PER_STRIP - 1].setRGB(0, 0, 255); //Light on top of TARDIS Blue - But only if in day/night mode and TARDIS ==1
+    leds[NUM_LEDS_PER_STRIP - 1].setRGB(255, 0, 0);     //Light on top of TARDIS Red
   }
 
+  if (TARDIS ==2)
+  {
+    leds[NUM_LEDS_PER_STRIP - 1].setRGB(0, 255, 0);     //Light on top of TARDIS Green
+  }
+
+  if (TARDIS ==3)
+  {
+    leds[NUM_LEDS_PER_STRIP - 1].setRGB(0, 0, 255);     //Light on top of TARDIS Blue
+  }
+
+  if (TARDIS ==4)
+  {
+    leds[NUM_LEDS_PER_STRIP - 1].setRGB(255, 255, 255);     //Light on top of TARDIS White
+  }
+
+  
   FastLED.setBrightness(howbright);
   FastLED.show();
+
 
   Serial.print("LED_phase = ");
   Serial.print(LED_phase);
@@ -495,19 +569,19 @@ void DecodeEpoch(unsigned long currentTime)
 
   clock_minutes = ((hourtomin * 60) + minute);
 
-  //Get to My minutes for day/night calc
-  Myclock_minutes = clock_minutes + (myUTC * 60);
+  //Get local minutes for day/night calc
+  local_clock_minutes = clock_minutes + (localUTC * 60);
 
-  if (Myclock_minutes > 1440)
+  if (local_clock_minutes > 1440)
   {
-    Myclock_minutes = Myclock_minutes - 1440;
+    local_clock_minutes = local_clock_minutes - 1440;
   }
 
   if (printNTP ==1){
-  Serial.print("Clock - Mins from midnight = ");
+  Serial.print("UTC Clock - Mins from midnight = ");
   Serial.println(clock_minutes);
-  Serial.print("My - Clock - Mins from midnight = ");
-  Serial.println(Myclock_minutes);
+  Serial.print("Local - Clock - Mins from midnight = ");
+  Serial.println(local_clock_minutes);
   Serial.println();
   Serial.println("****************");
   Serial.println();
@@ -536,19 +610,19 @@ void DecodeEpoch(unsigned long currentTime)
 
   sunrise_minutes = ((hourtomin * 60) + minute_sunrise);
 
-  //Get to My minutes for day/night calc
-  Mysunrise_minutes = sunrise_minutes + (myUTC * 60);
+  //Get to local minutes for day/night calc
+  local_sunrise_minutes = sunrise_minutes + (localUTC * 60);
 
-  if (Mysunrise_minutes > 1440)
+  if (local_sunrise_minutes > 1440)
   {
-    Mysunrise_minutes = Mysunrise_minutes - 1440;
+    local_sunrise_minutes = local_sunrise_minutes - 1440;
   }
 
   if (printNTP ==1){
   Serial.print("Sunrise - Mins from midnight = ");
   Serial.println(sunrise_minutes);
-  Serial.print("My - Sunrise - Mins from midnight = ");
-  Serial.println(Mysunrise_minutes);
+  Serial.print("Local - Sunrise - Mins from midnight = ");
+  Serial.println(local_sunrise_minutes);
   }
 
   //Work out Hours/min into minutes from midnight
@@ -569,24 +643,31 @@ void DecodeEpoch(unsigned long currentTime)
   //Noon = 12
   if (strcmp(SS_AMPM, "P") == 0 && hour_sunset == 12)
   {
-    hourtomin = 12;
+    hourtomin = 12;  Serial.println();
+  Serial.print("Hour: ");
+  Serial.print(hour);
+  Serial.print(",   Minute: ");
+  Serial.print(minute);
+  Serial.print(",   Second: ");
+  Serial.println(second);
+  Serial.println();
   }
 
   sunset_minutes = ((hourtomin * 60) + minute_sunset);
 
-  //Get to My minutes for day/night calc
-  Mysunset_minutes = sunset_minutes + (myUTC * 60);
+  //Get to local minutes for day/night calc
+  local_sunset_minutes = sunset_minutes + (localUTC * 60);
 
-  if (Mysunset_minutes > 1440)
+  if (local_sunset_minutes > 1440)
   {
-    Mysunset_minutes = Mysunset_minutes - 1440;
+    local_sunset_minutes = local_sunset_minutes - 1440;
   }
 
   if (printNTP ==1){
   Serial.print("Sunset - Mins from midnight = ");
   Serial.println(sunset_minutes);
-  Serial.print("My - Sunset - Mins from midnight = ");
-  Serial.println(Mysunset_minutes);
+  Serial.print("Local - Sunset - Mins from midnight = ");
+  Serial.println(local_sunset_minutes);
   Serial.println();
   }
 }
@@ -874,7 +955,7 @@ void WiFi_and_Credentials()
   
   WiFiManagerParameter custom_longitude("Longitude", "Longitude", "", 10);
     WiFiManagerParameter custom_latitude("Latitude", "Latitude", "", 10);
-  WiFiManagerParameter custom_mode("Mode", "Mode", "", 4);
+  WiFiManagerParameter custom_mode("Mode", "Mode", "", 3);
     WiFiManagerParameter custom_UTC("UTC", "UTC", "", 3);
 
     wifiManager.addParameter(&custom_longitude);
@@ -944,31 +1025,56 @@ void WiFi_and_Credentials()
 
   //Check File content or web entered details and correct if needed
   //Get light mode from saved file and turn into an Int and check it's either 0, 1 or 2
+  //Get TARDIS from saved file and turn into an Int and check it's either 0, 1  (light on top of TARDIS)
   char buffer[0];
+  char buffer1[0];
+  char buffer2[0];  
   buffer[0] = mode[0];
-  lightmode = atoi(buffer);
+  buffer1[0] = mode[1];
+  buffer2[0] = mode[2];
 
+  lightmode = atoi(buffer);
+  TARDIS = atoi(buffer1);
+  flash = atoi(buffer2);
+
+    //Check light mode is valid.  
     if (lightmode <0 || lightmode >2){
       Serial.println("Light mode incorrect - overriding");
       lightmode = 0;
     }
-
       Serial.print("Light mode used = ");
       Serial.println(lightmode);
 
-    //Get UTC from saved file and turn into an Int and check it's between 0-24
-    char buffer2[2];
-    buffer2[0] = UTC[0];
-    buffer2[1] = UTC[1];
-    buffer2[2] = UTC[2];
-    myUTC = atoi(buffer2);
+    //Check Top light entry is valid
+    if (TARDIS <0 || TARDIS >4){
+      Serial.println("Top light incorrect - overriding");
+      TARDIS = 1;
+    }
+      Serial.print("Top light used = ");
+      Serial.println(TARDIS);
 
-    if (myUTC < -12 || myUTC > 12){
+    //Check flash mode is valid.  
+    if (flash <0 || flash >1){
+      Serial.println("Flash mode incorrect - overriding");
+      flash = 0;
+    }
+      Serial.print("Flash mode used = ");
+      Serial.println(flash);
+
+
+    //Get UTC from saved file and turn into an Int and check it's between 0-24
+    char buffer3[3];
+    buffer3[0] = UTC[0];
+    buffer3[1] = UTC[1];
+    buffer3[2] = UTC[2];
+    localUTC = atoi(buffer3);
+
+    if (localUTC < -12 || localUTC > 12){
       Serial.println("UTC mode incorrect - overriding");
-      myUTC = 12;
+      localUTC = 12;
     }
       Serial.print("UTC used = ");
-      Serial.println(myUTC);
+      Serial.println(localUTC);
       
 }
 
