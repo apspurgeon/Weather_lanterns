@@ -89,7 +89,7 @@
 #define COLOR_ORDER GRB            // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
 //Flash at top of hour
-int flash_minswithin = 6;          //minutes within for flash  e.g 10 = 5 mins each side of the hour)
+int flash_minswithin = 2;          //minutes within for flash  e.g 10 = 5 mins each side of the hour)
 float flash_factor = 0.3;          //amount to lims lamp to (%) of full brightness
 int flash_delay = 2;               //delay between LED flashes
 
