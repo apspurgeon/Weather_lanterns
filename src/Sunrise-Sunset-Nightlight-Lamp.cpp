@@ -4,10 +4,26 @@
 // It connects to an NTP time server, and sunrise/set server to determine time of day (UTC) and when the sun
 // will rise and set based on Longitude and Latitude co-ordinates.  
 //
-// There are 2 modes of operation as set by the nightmode var.  
+// There are 3 modes of operation as set by the nightmode var.  
 // 0 = day time LEDs are yellow, night LEDs are blue and as sun rises/sets LEDs reflect the colours of that change
 // 1 = night light mode.  day time LEDs are off, night LEDs are yellow and as sun rises/sets LEDs reflect the colours of that change
 // 2 = night light mode.  day time LEDs are off, night LEDs are yellow  with no sun rise/set LEDs changes (e.g a hard on/off)
+//
+// 1st digit
+// Mode 0:  During the day, the LEDs are yellow (sunshine), and night LEDs are blue (Night sky) and as sun rises/sets LEDs change colour with the sunrise/set.
+// Mode 1:  Night light mode(1).  During the day time LEDs are off, at night the LEDs are yellow and as sun rises/sets LEDs reflect the colours of that change.
+// Mode 2:  Night light mode(2).  During the day time LEDs are off, at night the LEDs are yellow  with no sun rise/set LEDs changes (The Lamp will just turn on and off at dawn and dusk).
+//
+// 2nd digit
+// 0:  Last LED behaves the same as all the other LEDs.
+// 1:  Last LED is Red,   2:  Last LED is Green,   3:  Last LED is Blue,  4:  Last LED is White
+//
+// 3rd digit
+// 0:  No flashing of LEDs
+// 1:  If within 5 mins of the top of the hour, the LEDs will flash
+//
+// Example:  031 = Is a sunrise/sunset (on during day/night) with the top light blue with LEDs flashing.
+//
 //
 // Variables of interest are found between the 'Things to change' comment lines
 // Including the time delay between updating LEDs, time between NTP time checks and time between sunrise/set API requests.
@@ -67,26 +83,31 @@
 #endif
 */
 
+//LED details
 #define NUM_LEDS_PER_STRIP 13      //Number of LEDs per strip
 #define PIN_LED D7                 //I.O pin on ESP2866 device going to LEDs
 #define COLOR_ORDER GRB            // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
-int flash_minswithin = 5;          //minutes within for flash  e.g 10 = 5 mins each side of the hour)
-float flash_factor = 0.2;          //Amount to lims lamp to (%)
+//Flash at top of hour
+int flash_minswithin = 6;          //minutes within for flash  e.g 10 = 5 mins each side of the hour)
+float flash_factor = 0.3;          //amount to lims lamp to (%) of full brightness
 int flash_delay = 2;               //delay between LED flashes
 
+//What colour to go when in night light mode (e.g no sunrise/sunset)
 int green_nightlight = 128;        //Night RGB LED settings for night lightmode
 int blue_nightlight = 0;           //Night RGB LED settings for night light mode
 int red_nightlight = 255;          //Night RGB LED settings for night light mode
 
+//Lamp brightness
 const int howbright = 255;         //0-255 LED Brightness level
 
+//SPIFFS Filenames
 String HTTPfilename = "APIaddress.txt";             //Filename for storing Sunrise API HTTP address in SPIFFS
-String Modefilename = "Mode.txt";                   //Filename for storing Sunrise Mode in SPIFFS
-String UTCfilename = "UTC.txt";
+String Modefilename = "Mode.txt";                   //Filename for storing Sunrise Mode in SPIFFS (3 digits:  Mode, Top lamp, Flash)
+String UTCfilename = "UTC.txt";                     //Filename for storing Sunrise UTC in SPIFFS
 
 //Lightmode, TARDIS, Longitude/Latitude and UTC are stated here but overwritten when webpage credentials are entered (if using WiFi Manager)
-const char *NTPServerName = "0.nz.pool.ntp.org";    //Your local NTP server
+const char *NTPServerName = "0.nz.pool.ntp.org";    //local NTP server
 int localUTC = 12;                                  //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
 int lightmode = 0;                                  //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (but off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
 int TARDIS = 1;                                     //Used for my TARDIS lamp.  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
@@ -100,6 +121,7 @@ const int change = 1;              //Speed of LED change in tones.  Recommend = 
 
 const int testUTC = 0;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
 const int testDayNight = 1;        //*TESTING* If testUTC !=0 then this gets used for testing purposes
+const int printthings = 0;         //*TESTING* Flag to enable/disable printing on informations
 
 //*************************
 //*** Things to change  *** 
@@ -137,7 +159,9 @@ int hour, minute, second;           //UTC time
 int clock_minutes, local_clock_minutes; //Minutes from midnight
 int NTPSeconds_to_wait = 1;         // -  Initial wait time between NTP/Sunrise pulls (1 sec)
 String clock_AMPM;
-int printNTP=0;                     //Set to 1 when a NTP is pull and then used to determine if Time is printed during the loop (e.g don't using a Millis)
+int printNTP=0;                     //Set to 1 when a NTP is pulled.  The decodeepoch function used for both NTP epoch and millis epoch.  printNTP=1 in this fucnction only print new NTP results (time).
+int SecondsSinceLastNTP;
+unsigned long epoch2;              //Used to calculate Millis drift/difference with NTP
 
 //LED Flash variables
 int flash_phase = 0;               //If x minutes within top of hour flash the LEDs
@@ -241,6 +265,17 @@ void setup()
   startmillis = millis(); //get starting point for millis
   API_Request();          //Get sunrise/sunset times
 
+    Serial.print("millis = ");
+    Serial.println(millis());
+    Serial.print("start millis = ");
+    Serial.println(startmillis);
+    Serial.print("epochstart = ");
+    Serial.println(epochstart);
+    Serial.print("epoch = ");
+    Serial.println(epoch);
+    Serial.print("minutes = ");
+    Serial.println(minute); 
+
 }
 
 
@@ -250,18 +285,31 @@ void loop()
 
 {
   //Blynk.run();          //If Blynk being used
-  
+
   checkreset();           //Has the GPIO (D3) been taken low to reset WiFiManager / clears SPIFFS?
 
   //Get epoch from millis count.  May get over writtem by NTP pull
-  epoch = epochstart + (millis() - startmillis) / 1000;
+  epoch = epochstart + ((millis() - startmillis) / 1000);
+
   printNTP=0;
 
   //Check if it's time to display to get NTP time by checking Millis past against the wait period defined.
   //NTP pull is done periodically, counting Millis by internal count is very accurate so NTP not constantly needed.
-  int SecondsSinceLastNTP = (millis() - LastNTP) / 1000; //How many seconds since LastNTP pull
+  SecondsSinceLastNTP = (millis() - LastNTP) / 1000; //How many seconds since LastNTP pull
   if (SecondsSinceLastNTP > NTPSeconds_to_wait)
   {
+
+    Serial.print("millis = ");
+    Serial.println(millis());
+    Serial.print("start millis = ");
+    Serial.println(startmillis);
+    Serial.print("epochstart = ");
+    Serial.println(epochstart);
+    Serial.print("epoch = ");
+    Serial.println(epoch);
+    Serial.print("minutes = ");
+    Serial.println(minute); 
+
     Request_Time();         //Get the time
     printNTP=1;
     delay(2000);
@@ -288,10 +336,7 @@ void loop()
     NTPSeconds_to_wait = NTPSecondstowait;        //Over write the initial wait period (1 sec) to the ongoing period (120 sec)
   }
     //Epoch has been updated using NTP pull or counting Millis.  Now turn this into Clock_Minutes
-    DecodeEpoch(epoch + SecondsSinceLastNTP);     //Turn epoch time into Hours Minutes Seconds.  Work out timing for LEDs.  Must go after API request
-    //Serial.print("clock_minutes= ");
-      //Serial.println(clock_minutes);
-
+    DecodeEpoch(epoch);     //Turn epoch time into Hours Minutes Seconds
 
   //Check if it's time to get Sunrise/Set times
   int SecondsSinceLastAPI = (millis() - LastAPI) / 1000;      //How many seconds since Last API pull
@@ -364,13 +409,14 @@ void DoTheLEDs()
 
   //Check for x minutes within top of 
   if (flash == 1){
-  if (minute > (60 - (flash_minswithin)) || minute < (0 + (flash_minswithin))){
+
+  if (minute > (60 - (flash_minswithin/2)) || minute < (0 + (flash_minswithin/2))){
     flash_phase = 1;
   }
   else {
     flash_phase = 0;
   }
-}
+    }
 
   //Check for sunrise.  Clock_minutes is time in minutes from midnight
   if (clock_minutes >= (sunrise_minutes - (minswithin / 2)) && clock_minutes <= (sunrise_minutes + (minswithin / 2)))
@@ -413,7 +459,14 @@ void DoTheLEDs()
   }
   //****** For TESTING purposes only ******
 
+  if (printthings == 1){
   Serial.println();
+  Serial.print("SecondsSinceLastNTP: ");
+  Serial.println(SecondsSinceLastNTP);
+  Serial.print("Startmillis: ");
+  Serial.println(startmillis);    
+  Serial.print("epochstart: ");
+  Serial.println(epochstart);  
   Serial.print("Hour: ");
   Serial.print(hour);
   Serial.print(",   Minute: ");
@@ -433,7 +486,7 @@ void DoTheLEDs()
   Serial.println(sunset_minutes - clock_minutes - int(minswithin / 2));
   Serial.print("Mins to Sunrise phase = ");
   Serial.println(sunrise_minutes - clock_minutes - int(minswithin / 2));
-  
+  }
 
   //call function to select LED colours for either all day/night or just nightlight
   if (lightmode == 0)
@@ -473,7 +526,7 @@ void DoTheLEDs()
   FastLED.setBrightness(howbright);
   FastLED.show();
 
-
+  if (printthings == 1){
   Serial.print("LED_phase = ");
   Serial.print(LED_phase);
   Serial.println();
@@ -486,6 +539,7 @@ void DoTheLEDs()
   Serial.println();
   Serial.println("****************");
   Serial.println();
+  }
 }
 
 
@@ -494,7 +548,7 @@ void DoTheLEDs()
 void DecodeEpoch(unsigned long currentTime)
 {
   // print the raw epoch time from NTP server
-   if (printNTP ==1){
+   if (printNTP ==1 && printthings ==1){
   Serial.print("The epoch UTC time is ");
   Serial.print(epoch);
   Serial.println();
@@ -534,7 +588,7 @@ void DecodeEpoch(unsigned long currentTime)
     clock_AMPM = "PM";
   }
 
-  if (printNTP ==1){
+  if (printNTP ==1 && printthings ==1){
   Serial.println();
   Serial.print("Hour: ");
   Serial.print(hour);
@@ -577,7 +631,8 @@ void DecodeEpoch(unsigned long currentTime)
     local_clock_minutes = local_clock_minutes - 1440;
   }
 
-  if (printNTP ==1){
+
+  if (printNTP ==1 && printthings ==1){
   Serial.print("UTC Clock - Mins from midnight = ");
   Serial.println(clock_minutes);
   Serial.print("Local - Clock - Mins from midnight = ");
@@ -618,7 +673,7 @@ void DecodeEpoch(unsigned long currentTime)
     local_sunrise_minutes = local_sunrise_minutes - 1440;
   }
 
-  if (printNTP ==1){
+  if (printthings ==1){
   Serial.print("Sunrise - Mins from midnight = ");
   Serial.println(sunrise_minutes);
   Serial.print("Local - Sunrise - Mins from midnight = ");
@@ -663,7 +718,7 @@ void DecodeEpoch(unsigned long currentTime)
     local_sunset_minutes = local_sunset_minutes - 1440;
   }
 
-  if (printNTP ==1){
+  if (printNTP ==1 && printthings ==1){
   Serial.print("Sunset - Mins from midnight = ");
   Serial.println(sunset_minutes);
   Serial.print("Local - Sunset - Mins from midnight = ");
@@ -677,6 +732,7 @@ void DecodeEpoch(unsigned long currentTime)
 //Get time from NTP Server
 void Request_Time()
 {
+  epoch2=epoch;             //Used to check old (using millis) epoch against a new epoch from NTP to show drift.
   Serial.println("Getting Time");
   WiFi.hostByName(NTPServerName, timeServer);
   sendNTPpacket(timeServer); // send an NTP packet to a time server
@@ -768,6 +824,15 @@ bool Check_Time() //This returns a bool value based on UDP time being received a
       epochstart = epoch;     //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
       startmillis = millis(); //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
     }
+
+      Serial.print("new NTP epoch  = ");
+      Serial.println(epoch);
+
+      Serial.print("Millis epoch  = ");
+      Serial.println(epoch2);
+
+      Serial.print("Difference (ms) = ");
+      Serial.println(abs(epoch - epoch2));
 
     LastNTP = millis(); //Set the last millis time the NTP time was attempted
     RequestedTime = 0;
