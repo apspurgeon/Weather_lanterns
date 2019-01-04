@@ -90,8 +90,7 @@
 
 //Flash at top of hour
 int flash_minswithin = 2;          //minutes within for flash  e.g 10 = 5 mins each side of the hour)
-float flash_factor = 0.3;          //amount to lims lamp to (%) of full brightness
-int flash_delay = 2;               //delay between LED flashes
+int flash_delay = 60;               //delay between LED flashes (ms)
 
 //What colour to go when in night light mode (e.g no sunrise/sunset)
 int green_nightlight = 128;        //Night RGB LED settings for night lightmode
@@ -121,7 +120,7 @@ const int change = 1;              //Speed of LED change in tones.  Recommend = 
 
 const int testUTC = 0;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
 const int testDayNight = 1;        //*TESTING* If testUTC !=0 then this gets used for testing purposes
-const int printthings = 0;         //*TESTING* Flag to enable/disable printing on informations
+const int printthings = 1;         //*TESTING* Flag to enable/disable printing on informations
 
 //*************************
 //*** Things to change  *** 
@@ -166,8 +165,12 @@ unsigned long epoch2;              //Used to calculate Millis drift/difference w
 //LED Flash variables
 int flash_phase = 0;               //If x minutes within top of hour flash the LEDs
 int flash = 0;                     //flash = 0 (no flash)  flash = 1 (flash) set by user
-float flash_working;               //working var
-int LastFlashEpoch;                //Used for tracking delay
+int LastFlashmillis;                //Used for tracking delay
+int flash_working = 0;             //working var for sinearray (ranges 0-31)
+
+//char sinetable [32];               //Create an array with 0-255 sine wave with array 0-31
+//char sinetable[]= {127, 152,176,198,217,233,245,252,254,252,245,233,217,198,176,152,128,103,79,57,38,22,10,3,0,3,10,22,38,57,79,103};
+char sinetable[]= {127,152,176,198,217,233,245,252,254,252,245,233,217,198,176,152,128,103,79,57,38,22,38,57,79,103};
 
 //Sunrise - Sunset API variables
 int h_sunrise, hour_sunrise, minute_sunrise;
@@ -194,18 +197,18 @@ const int blue_daynight = 0;     //Day RGB LED settings for day/night mode (Yell
 const int red_daynight = 255;    //Day RGB LED settings for day/night mode (Yellow)
 
 //Functions declared
-void nightlight ();
-void daynight ();
-void API_Request ();
-void DoTheLEDs ();
-bool Check_Time ();
-void DecodeEpoch (unsigned long);
-void sendNTPpacket (const IPAddress &address);
-void ConnectToAP ();
-void Request_Time ();
-void checkreset();
-void WiFi_and_Credentials();
-
+void nightlight ();                             //function if in nightlight mode
+void daynight ();                               //function if in day night mode
+void API_Request ();                            //Gets sunrise/set times from API
+void DoTheLEDs ();                              //Update LED colours based on time (minutes from midnight UTC)
+void checkflash ();                             //Check if flash is needed
+void Request_Time ();                           //Get time from NTP time server
+bool Check_Time ();                             //Check time is correct and ok  
+void DecodeEpoch (unsigned long);               //Turn Unix epoch time into hours:minutes
+void sendNTPpacket (const IPAddress &address);  //Get data
+void ConnectToAP ();                            //connect to WiFi Access point
+void WiFi_and_Credentials();                    //Get WiFi credentials if using WiFi manager option (also connects to access point)
+void checkreset();                              //Check if reset button has been pressed
 
 
 void setup()
@@ -298,7 +301,6 @@ void loop()
   SecondsSinceLastNTP = (millis() - LastNTP) / 1000; //How many seconds since LastNTP pull
   if (SecondsSinceLastNTP > NTPSeconds_to_wait)
   {
-
     Serial.print("millis = ");
     Serial.println(millis());
     Serial.print("start millis = ");
@@ -352,29 +354,43 @@ void loop()
   if (SecondsSinceLastLED > LEDSecondstowait)
   {
     LastLED = millis();
-    DoTheLEDs();      //Set the LED colours based on the Time and the Sun position
+
+    if (flash_phase == 0){
+    DoTheLEDs();      //Set the LED colours based on the Time and the Sun position.  Don't update LED colours when in flash mode (causes flicker)
+    }
+
     yield();
   } 
+
+  //Check if flash is require and manipulate the brightness
+  checkflash ();
+}
+
+
+
+
+//Check if flash is required and manipulate brightness
+void checkflash (){ 
 
   //If in flash mode then do the flash routine
   if (flash_phase == 1){
 
   //Check if the required time has passed to flash
-  if (epoch - LastFlashEpoch >= flash_delay){
-    LastFlashEpoch = epoch;
-
-    FastLED.setBrightness(howbright * flash_working);
-    FastLED.show();
+  if (millis() - LastFlashmillis >= flash_delay){
+    LastFlashmillis = millis();
     
-    if (flash_working == 1){
-      flash_working = flash_factor;
+    FastLED.setBrightness(howbright * sinetable[flash_working]);
+    FastLED.show();
+
+    flash_working = flash_working + 1;
+
+    //return to begining of sequence
+    if (flash_working == 26){
+      flash_working = 0;
     }
-    else {
-      flash_working = 1;
-    }  
+    } 
   }
-}
-}
+  }
 
 
 //Check if reset button pressed.  D3 / GPIO0 held to ground.
@@ -671,13 +687,6 @@ void DecodeEpoch(unsigned long currentTime)
   if (local_sunrise_minutes > 1440)
   {
     local_sunrise_minutes = local_sunrise_minutes - 1440;
-  }
-
-  if (printthings ==1){
-  Serial.print("Sunrise - Mins from midnight = ");
-  Serial.println(sunrise_minutes);
-  Serial.print("Local - Sunrise - Mins from midnight = ");
-  Serial.println(local_sunrise_minutes);
   }
 
   //Work out Hours/min into minutes from midnight
@@ -1369,4 +1378,3 @@ void nightlight()
     red = red_nightlight;
   }
 }
-
