@@ -111,16 +111,18 @@ int localUTC = 12;                                  //Country UTC offset, needed
 int lightmode = 0;                                  //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (but off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
 int TARDIS = 1;                                     //Used for my TARDIS lamp.  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
 
-const int NTPSecondstowait = 600;  //Wait between NTP pulls (sec)
-const int APISecondstowait = 3600; //Wait between Sunrise API pulls (sec)
+int NTPSecondstowait = 600;  //Wait between NTP pulls (sec)
+int APISecondstowait = 3600; //Wait between Sunrise API pulls (sec)
 
 const int LEDSecondstowait = 5;    //Wait between LED updates (sec)
 const int minswithin = 60;         //Minutes within sunrise / sunset to begin the LED colour change sequence  (60 = phase starts 30mins before sunrise/set and end 30mins after)
 const int change = 1;              //Speed of LED change in tones.  Recommend = 1
 
-const int testUTC = 0;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
-const int testDayNight = 1;        //*TESTING* If testUTC !=0 then this gets used for testing purposes
+
+//*** TESTING use only.  See testing section at end of setup
+const int TESTING = 1;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
 const int printthings = 1;         //*TESTING* Flag to enable/disable printing on informations
+
 
 //*************************
 //*** Things to change  *** 
@@ -161,6 +163,7 @@ String clock_AMPM;                  //AM/PM from NTP Server
 int printNTP=0;                     //Set to 1 when a NTP is pulled.  The decodeepoch function used for both NTP epoch and millis epoch.  printNTP=1 in this fucnction only print new NTP results (time).
 int SecondsSinceLastNTP;            //Counts seconds since last NTP pull
 unsigned long epoch2;               //Used to calculate Millis drift/difference with NTP
+int timefactor;                     //accellerate time by this factor (for testing)
 
 //LED Flash variables
 int flash_phase = 0;               //If x minutes within top of hour flash the LEDs
@@ -263,6 +266,23 @@ void setup()
       Request_Time(); //Get the time
     }
   }
+
+
+//Check if time factor testing >1.  if yes, then overide the NTP/API delays to 48hrs to have clock run from jusdt millis
+if (TESTING != 0){
+
+  flash = 0;                  //Turn off flash if in testing mode
+  NTPSecondstowait = 60;  //Wait between NTP pulls (sec)
+  APISecondstowait = 600;  //Wait between Sunrise API pulls (sec) 
+  timefactor = 1;            //accellerate time by this factor
+  lightmode = 0;              //overide lightmode
+  TARDIS = 3;                 //overide top light
+  localUTC = 3;               //overide UTC
+  sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=55.755825&lng=37.617298");
+ Serial.print("TEST sunrise_api_request = ");
+ Serial.println(sunrise_api_request);
+ }
+
   epochstart = epoch;     //epoch pulled from NTP server, use initial epoch to set starting point for epochmillis
   startmillis = millis(); //get starting point for millis
   API_Request();          //Get sunrise/sunset times
@@ -290,8 +310,8 @@ void loop()
 
   checkreset();           //Has the GPIO (D3) been taken low to reset WiFiManager / clears SPIFFS?
 
-  //Get epoch from millis count.  May get over writtem by NTP pull
-  epoch = epochstart + ((millis() - startmillis) / 1000);
+  //Get epoch from millis count.  May get over writtem by NTP pull.  timefactor is for testing to accellerate time.
+  epoch = epochstart + (((millis() - startmillis) / 1000) * timefactor);
 
   printNTP=0;
 
@@ -375,14 +395,12 @@ void loop()
 //Check if flash is required and manipulate brightness
 void checkflash (){ 
 
-  //Check for x minutes within top of hour to do flash.  Only do this is flash is enabled (flash =1)
+  //Check for x minutes within top of hour to do flash.  Only do this is flash is enabled in set up (flash =1)
   if (flash == 1){
 
-  if (minute >= 0 && minute <= flash_mins){
+  flash_phase = 0;
+  if (minute < flash_mins){        //minutes = 0 at top of hour, so just check minutes is less or equal to the flash period
     flash_phase = 1;
-  }
-  else {
-    flash_phase = 0;
   }
     }
 
@@ -434,25 +452,25 @@ void checkreset(){
 } 
 
 
-//Calculate LED colours phases on the phase of the sun using sunrise API data and NTP time.
+//Calculate LED colours phases on the phase of the sun using sunrise API data and NTP time converted to local time (using UTC offset)
 void DoTheLEDs()
 {
-  //Check for sunrise.  Clock_minutes is time in minutes from midnight
-  if (clock_minutes >= (sunrise_minutes - (minswithin / 2)) && clock_minutes <= (sunrise_minutes + (minswithin / 2)))
+  //Check for sunrise.  Clock_minutes is time in minutes from midnight.  Sunrise/set minutes is LOCAL time from API
+  if (local_clock_minutes >= (sunrise_minutes - (minswithin / 2)) && local_clock_minutes <= (sunrise_minutes + (minswithin / 2)))
   {
     SR_Phase = 1;
-    LED_phase = ((clock_minutes - sunrise_minutes) + (minswithin / 2)) / (float)minswithin * 255;
+    LED_phase = ((local_clock_minutes - sunrise_minutes) + (minswithin / 2)) / (float)minswithin * 255;
   }
   else
   {
     SR_Phase = 0;
   }
 
-  //Check for sunset.  Clock_minutes is time in minutes from midnight
-  if (clock_minutes >= (sunset_minutes - (minswithin / 2)) && clock_minutes <= (sunset_minutes + (minswithin / 2)))
+  //Check for sunset.  Clock_minutes is time in minutes from midnight.  Sunrise/set minutes is LOCAL time from API
+  if (local_clock_minutes >= (sunset_minutes - (minswithin / 2)) && local_clock_minutes <= (sunset_minutes + (minswithin / 2)))
   {
     SS_Phase = 1;
-    LED_phase = ((clock_minutes - sunset_minutes) + (minswithin / 2)) / (float)minswithin * 255;
+    LED_phase = ((local_clock_minutes - sunset_minutes) + (minswithin / 2)) / (float)minswithin * 255;
   }
   else
   {
@@ -460,7 +478,7 @@ void DoTheLEDs()
   }
 
   //if it's not in sunrise or sunset sequence then find out if it's day (yellow) or night (blue) and set colour
-  //Using Local UTC estimate (don't care about daylight saving) for day or night
+  //Using Local UTC (don't care about daylight saving) for day or night
   if (local_clock_minutes > local_sunrise_minutes && local_clock_minutes < local_sunset_minutes)
   {
     night = 0;
@@ -470,15 +488,14 @@ void DoTheLEDs()
     night = 1;
   }
 
-
-  //****** For TESTING purposes only ******
-  if (testUTC != 0){
-  clock_minutes = testUTC;  // Force the UTC time to for testing purposes (do the LEDs work as expected at this time)
-  night = testDayNight;
-  }
-  //****** For TESTING purposes only ******
-
   if (printthings == 1){
+
+    
+  Serial.print("clock_minutes (UTC) = ");
+  Serial.println(clock_minutes);
+  Serial.print("clock_minutes (local) = ");
+  Serial.println(local_clock_minutes);
+
   Serial.println();
   Serial.print("SecondsSinceLastNTP: ");
   Serial.println(SecondsSinceLastNTP);
@@ -502,9 +519,9 @@ void DoTheLEDs()
   Serial.print("Sunset phase = ");
   Serial.println(SS_Phase);
   Serial.print("Mins to Sunset phase = ");
-  Serial.println(sunset_minutes - clock_minutes - int(minswithin / 2));
+  Serial.println(sunset_minutes - local_clock_minutes - int(minswithin / 2));
   Serial.print("Mins to Sunrise phase = ");
-  Serial.println(sunrise_minutes - clock_minutes - int(minswithin / 2));
+  Serial.println(sunrise_minutes - local_clock_minutes - int(minswithin / 2));
   }
 
   //call function to select LED colours for either all day/night or just nightlight
@@ -643,13 +660,12 @@ void DecodeEpoch(unsigned long currentTime)
   clock_minutes = ((hourtomin * 60) + minute);
 
   //Get local minutes for day/night calc
-  local_clock_minutes = clock_minutes + (localUTC * 60);
+  local_clock_minutes = clock_minutes+ (localUTC * 60);
 
   if (local_clock_minutes > 1440)
   {
     local_clock_minutes = local_clock_minutes - 1440;
   }
-
 
   if (printNTP ==1 && printthings ==1){
   Serial.print("UTC Clock - Mins from midnight = ");
@@ -685,7 +701,7 @@ void DecodeEpoch(unsigned long currentTime)
   sunrise_minutes = ((hourtomin * 60) + minute_sunrise);
 
   //Get to local minutes for day/night calc
-  local_sunrise_minutes = sunrise_minutes + (localUTC * 60);
+  local_sunrise_minutes = sunrise_minutes; //+ (localUTC * 60);
 
   if (local_sunrise_minutes > 1440)
   {
@@ -723,19 +739,28 @@ void DecodeEpoch(unsigned long currentTime)
   sunset_minutes = ((hourtomin * 60) + minute_sunset);
 
   //Get to local minutes for day/night calc
-  local_sunset_minutes = sunset_minutes + (localUTC * 60);
+  local_sunset_minutes = sunset_minutes;// + (localUTC * 60);
 
   if (local_sunset_minutes > 1440)
   {
     local_sunset_minutes = local_sunset_minutes - 1440;
   }
 
-  if (printNTP ==1 && printthings ==1){
+  if (printthings ==1 && printNTP == 1){
+  Serial.print("hour_sunrise = ");
+  Serial.println(hour_sunrise);
+
+  Serial.print("Sunrise - Mins from midnight = ");
+  Serial.println(sunrise_minutes);
+  Serial.print("Local - Sunrise - Mins from midnight = ");
+  Serial.println(local_sunrise_minutes);
+  Serial.println();
   Serial.print("Sunset - Mins from midnight = ");
   Serial.println(sunset_minutes);
   Serial.print("Local - Sunset - Mins from midnight = ");
   Serial.println(local_sunset_minutes);
   Serial.println();
+
   }
 }
 
@@ -1125,7 +1150,7 @@ void WiFi_and_Credentials()
     //Check Top light entry is valid
     if (TARDIS <0 || TARDIS >4){
       Serial.println("Top light incorrect - overriding");
-      TARDIS = 1;
+      TARDIS = 3;
     }
       Serial.print("Top light used = ");
       Serial.println(TARDIS);
