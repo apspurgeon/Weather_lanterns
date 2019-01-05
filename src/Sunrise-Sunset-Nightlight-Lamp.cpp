@@ -89,7 +89,7 @@
 #define COLOR_ORDER GRB            // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
 //Flash at top of hour
-int flash_minswithin = 2;          //minutes within for flash  e.g 10 = 5 mins each side of the hour)
+int flash_mins = 1;                 //minutes to flash after the hourh  e.g 1 = 1min:  5pm - 5.01pm
 int flash_delay = 60;               //delay between LED flashes (ms)
 
 //What colour to go when in night light mode (e.g no sunrise/sunset)
@@ -154,37 +154,36 @@ const int NTP_PACKET_SIZE = 48;                                                 
 byte packetBuffer[NTP_PACKET_SIZE];                                                             //buffer to hold incoming and outgoing packets
 unsigned long epoch = 0, lastepoch = 0, LastNTP = 0, LastAPI, LastLED, epochstart, startmillis; //Unix time in seconds
 int lastepochcount = 0, totalfailepoch = 0;
-int hour, minute, second;           //UTC time
+int hour, minute, second;               //UTC time
 int clock_minutes, local_clock_minutes; //Minutes from midnight
-int NTPSeconds_to_wait = 1;         // -  Initial wait time between NTP/Sunrise pulls (1 sec)
-String clock_AMPM;
+int NTPSeconds_to_wait = 1;         //Initial wait time between NTP/Sunrise pulls (1 sec)
+String clock_AMPM;                  //AM/PM from NTP Server
 int printNTP=0;                     //Set to 1 when a NTP is pulled.  The decodeepoch function used for both NTP epoch and millis epoch.  printNTP=1 in this fucnction only print new NTP results (time).
-int SecondsSinceLastNTP;
-unsigned long epoch2;              //Used to calculate Millis drift/difference with NTP
+int SecondsSinceLastNTP;            //Counts seconds since last NTP pull
+unsigned long epoch2;               //Used to calculate Millis drift/difference with NTP
 
 //LED Flash variables
 int flash_phase = 0;               //If x minutes within top of hour flash the LEDs
 int flash = 0;                     //flash = 0 (no flash)  flash = 1 (flash) set by user
-int LastFlashmillis;                //Used for tracking delay
+int LastFlashmillis;               //Used for tracking delay
 int flash_working = 0;             //working var for sinearray (ranges 0-31)
 
-//char sinetable [32];               //Create an array with 0-255 sine wave with array 0-31
-//char sinetable[]= {127, 152,176,198,217,233,245,252,254,252,245,233,217,198,176,152,128,103,79,57,38,22,10,3,0,3,10,22,38,57,79,103};
+//Create an array with 0-255 sine wave with array 0-31
 char sinetable[]= {127,152,176,198,217,233,245,252,254,252,245,233,217,198,176,152,128,103,79,57,38,22,38,57,79,103};
 
 //Sunrise - Sunset API variables
 int h_sunrise, hour_sunrise, minute_sunrise;
-int sunrise_minutes, local_sunrise_minutes; //Minutes from midnight
-int SR_Phase = 0;                       //1 = in Sunrise phase (30 mins either side if minwithin = 60mins)
+int sunrise_minutes, local_sunrise_minutes;   //Minutes from midnight
+int SR_Phase = 0;                             //1 = in Sunrise phase (30 mins either side if minwithin = 60mins)
 int h_sunset, hour_sunset, minute_sunset, sunset_minutes, local_sunset_minutes;
-int SS_Phase = 0;                       //1 = in Sunset phase (30 mins either side if minwithin = 60mins)
-int hourtomin = 0;                      //Used to convert hours into total minutes
-float LED_phase;                        //0-255 in the phase of sunrise/set   0=begining 255=end
-char SR_AMPM[1], SS_AMPM[1];
+int SS_Phase = 0;                             //1 = in Sunset phase (30 mins either side if minwithin = 60mins)
+int hourtomin = 0;                            //Used to convert hours into total minutes
+float LED_phase;                              //0-255 in the phase of sunrise/set   0=begining 255=end
+char SR_AMPM[1], SS_AMPM[1];                  //Sunrise/set AMPM
 String AMPM, sunAPIresponse;
-struct CRGB leds[NUM_LEDS_PER_STRIP];   //initiate FastLED with number of LEDs
+struct CRGB leds[NUM_LEDS_PER_STRIP];         //initiate FastLED with number of LEDs
 String JSON_Extract(String);
-char mode [4];                          //Used to get input from webpage
+char mode [4];                                //Used to get input from webpage
 
 //LED Variables. Hold the value (0-255) of each primary colour
 int green = 0; 
@@ -298,6 +297,8 @@ void loop()
 
   //Check if it's time to display to get NTP time by checking Millis past against the wait period defined.
   //NTP pull is done periodically, counting Millis by internal count is very accurate so NTP not constantly needed.
+  if (flash_phase == 0){      //Don't go to NTP during flash phase as it causes flicker
+
   SecondsSinceLastNTP = (millis() - LastNTP) / 1000; //How many seconds since LastNTP pull
   if (SecondsSinceLastNTP > NTPSeconds_to_wait)
   {
@@ -313,7 +314,7 @@ void loop()
     Serial.println(minute); 
 
     Request_Time();         //Get the time
-    printNTP=1;
+    printNTP=1;             //1 is a flag to serialprint the time (only used for NTP pull not for millis updates)
     delay(2000);
     while (!Check_Time())
     { //If no time recieved then do this
@@ -326,7 +327,6 @@ void loop()
       }
     }
 
-
     //Time confirmed received and more than wait period to pull NTP / Sunrise time
     LastNTP = millis(); //Set the LastNTP time to now - resets the wait time
 
@@ -337,8 +337,10 @@ void loop()
     yield();
     NTPSeconds_to_wait = NTPSecondstowait;        //Over write the initial wait period (1 sec) to the ongoing period (120 sec)
   }
-    //Epoch has been updated using NTP pull or counting Millis.  Now turn this into Clock_Minutes
-    DecodeEpoch(epoch);     //Turn epoch time into Hours Minutes Seconds
+  }
+
+  //Epoch has been updated using NTP pull or counting Millis.  Now turn this into Clock_Minutes
+  DecodeEpoch(epoch);     //Turn epoch time into Hours Minutes Seconds
 
   //Check if it's time to get Sunrise/Set times
   int SecondsSinceLastAPI = (millis() - LastAPI) / 1000;      //How many seconds since Last API pull
@@ -355,8 +357,9 @@ void loop()
   {
     LastLED = millis();
 
+    //Set the LED colours based on the Time and the Sun position.  Don't update LED colours when in flash mode (causes flicker)
     if (flash_phase == 0){
-    DoTheLEDs();      //Set the LED colours based on the Time and the Sun position.  Don't update LED colours when in flash mode (causes flicker)
+    DoTheLEDs();     
     }
 
     yield();
@@ -371,6 +374,18 @@ void loop()
 
 //Check if flash is required and manipulate brightness
 void checkflash (){ 
+
+  //Check for x minutes within top of hour to do flash.  Only do this is flash is enabled (flash =1)
+  if (flash == 1){
+
+  if (minute >= 0 && minute <= flash_mins){
+    flash_phase = 1;
+  }
+  else {
+    flash_phase = 0;
+  }
+    }
+
 
   //If in flash mode then do the flash routine
   if (flash_phase == 1){
@@ -422,18 +437,6 @@ void checkreset(){
 //Calculate LED colours phases on the phase of the sun using sunrise API data and NTP time.
 void DoTheLEDs()
 {
-
-  //Check for x minutes within top of 
-  if (flash == 1){
-
-  if (minute > (60 - (flash_minswithin/2)) || minute < (0 + (flash_minswithin/2))){
-    flash_phase = 1;
-  }
-  else {
-    flash_phase = 0;
-  }
-    }
-
   //Check for sunrise.  Clock_minutes is time in minutes from midnight
   if (clock_minutes >= (sunrise_minutes - (minswithin / 2)) && clock_minutes <= (sunrise_minutes + (minswithin / 2)))
   {
