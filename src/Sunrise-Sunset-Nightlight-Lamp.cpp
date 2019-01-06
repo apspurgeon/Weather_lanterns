@@ -175,10 +175,9 @@ int flash_working = 0;             //working var for sinearray (ranges 0-31)
 char sinetable[]= {127,152,176,198,217,233,245,252,254,252,245,233,217,198,176,152,128,103,79,57,38,22,38,57,79,103};
 
 //Sunrise - Sunset API variables
-int h_sunrise, hour_sunrise, minute_sunrise;
-int sunrise_minutes, local_sunrise_minutes;   //Minutes from midnight
+int h_sunrise, hour_sunrise, minute_sunrise, local_minutes_to_sunrise;
 int SR_Phase = 0;                             //1 = in Sunrise phase (30 mins either side if minwithin = 60mins)
-int h_sunset, hour_sunset, minute_sunset, sunset_minutes, local_sunset_minutes;
+int h_sunset, hour_sunset, minute_sunset, local_minutes_to_sunset;
 int SS_Phase = 0;                             //1 = in Sunset phase (30 mins either side if minwithin = 60mins)
 int hourtomin = 0;                            //Used to convert hours into total minutes
 float LED_phase;                              //0-255 in the phase of sunrise/set   0=begining 255=end
@@ -456,10 +455,10 @@ void checkreset(){
 void DoTheLEDs()
 {
   //Check for sunrise.  Clock_minutes is time in minutes from midnight.  Sunrise/set minutes is LOCAL time from API
-  if (local_clock_minutes >= (sunrise_minutes - (minswithin / 2)) && local_clock_minutes <= (sunrise_minutes + (minswithin / 2)))
+  if (local_clock_minutes >= (local_minutes_to_sunrise - (minswithin / 2)) && local_clock_minutes <= (local_minutes_to_sunrise + (minswithin / 2)))
   {
     SR_Phase = 1;
-    LED_phase = ((local_clock_minutes - sunrise_minutes) + (minswithin / 2)) / (float)minswithin * 255;
+    LED_phase = ((local_clock_minutes - local_minutes_to_sunrise) + (minswithin / 2)) / (float)minswithin * 255;
   }
   else
   {
@@ -467,10 +466,10 @@ void DoTheLEDs()
   }
 
   //Check for sunset.  Clock_minutes is time in minutes from midnight.  Sunrise/set minutes is LOCAL time from API
-  if (local_clock_minutes >= (sunset_minutes - (minswithin / 2)) && local_clock_minutes <= (sunset_minutes + (minswithin / 2)))
+  if (local_clock_minutes >= (local_minutes_to_sunset - (minswithin / 2)) && local_clock_minutes <= (local_minutes_to_sunset + (minswithin / 2)))
   {
     SS_Phase = 1;
-    LED_phase = ((local_clock_minutes - sunset_minutes) + (minswithin / 2)) / (float)minswithin * 255;
+    LED_phase = ((local_clock_minutes - local_minutes_to_sunset) + (minswithin / 2)) / (float)minswithin * 255;
   }
   else
   {
@@ -479,7 +478,7 @@ void DoTheLEDs()
 
   //if it's not in sunrise or sunset sequence then find out if it's day (yellow) or night (blue) and set colour
   //Using Local UTC (don't care about daylight saving) for day or night
-  if (local_clock_minutes > local_sunrise_minutes && local_clock_minutes < local_sunset_minutes)
+  if (local_clock_minutes > local_minutes_to_sunrise && local_clock_minutes < local_minutes_to_sunset)
   {
     night = 0;
   }
@@ -519,9 +518,9 @@ void DoTheLEDs()
   Serial.print("Sunset phase = ");
   Serial.println(SS_Phase);
   Serial.print("Mins to Sunset phase = ");
-  Serial.println(sunset_minutes - local_clock_minutes - int(minswithin / 2));
+  Serial.println(local_minutes_to_sunset - local_clock_minutes - int(minswithin / 2));
   Serial.print("Mins to Sunrise phase = ");
-  Serial.println(sunrise_minutes - local_clock_minutes - int(minswithin / 2));
+  Serial.println(local_minutes_to_sunrise - local_clock_minutes - int(minswithin / 2));
   }
 
   //call function to select LED colours for either all day/night or just nightlight
@@ -698,14 +697,12 @@ void DecodeEpoch(unsigned long currentTime)
     hourtomin = 12;
   }
 
-  sunrise_minutes = ((hourtomin * 60) + minute_sunrise);
+  local_minutes_to_sunrise = ((hourtomin * 60) + minute_sunrise);
 
   //Get to local minutes for day/night calc
-  local_sunrise_minutes = sunrise_minutes; //+ (localUTC * 60);
-
-  if (local_sunrise_minutes > 1440)
+  if (local_minutes_to_sunrise > 1440)
   {
-    local_sunrise_minutes = local_sunrise_minutes - 1440;
+    local_minutes_to_sunrise = local_minutes_to_sunrise - 1440;
   }
 
   //Work out Hours/min into minutes from midnight
@@ -736,14 +733,11 @@ void DecodeEpoch(unsigned long currentTime)
   Serial.println();
   }
 
-  sunset_minutes = ((hourtomin * 60) + minute_sunset);
+  local_minutes_to_sunset = ((hourtomin * 60) + minute_sunset);
 
-  //Get to local minutes for day/night calc
-  local_sunset_minutes = sunset_minutes;// + (localUTC * 60);
-
-  if (local_sunset_minutes > 1440)
+  if (local_minutes_to_sunset > 1440)
   {
-    local_sunset_minutes = local_sunset_minutes - 1440;
+    local_minutes_to_sunset = local_minutes_to_sunset - 1440;
   }
 
   if (printthings ==1 && printNTP == 1){
@@ -751,14 +745,12 @@ void DecodeEpoch(unsigned long currentTime)
   Serial.println(hour_sunrise);
 
   Serial.print("Sunrise - Mins from midnight = ");
-  Serial.println(sunrise_minutes);
+  Serial.println(local_minutes_to_sunrise);
   Serial.print("Local - Sunrise - Mins from midnight = ");
-  Serial.println(local_sunrise_minutes);
+  Serial.println(local_minutes_to_sunrise);
   Serial.println();
   Serial.print("Sunset - Mins from midnight = ");
-  Serial.println(sunset_minutes);
-  Serial.print("Local - Sunset - Mins from midnight = ");
-  Serial.println(local_sunset_minutes);
+  Serial.println(local_minutes_to_sunset);
   Serial.println();
 
   }
