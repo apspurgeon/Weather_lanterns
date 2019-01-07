@@ -130,7 +130,7 @@ const int change = 1;              //Speed of LED change in tones.  Recommend = 
 
 
 //*** TESTING use only.  See testing section at end of setup
-const int TESTING = 1;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
+const int TESTING = 0;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
 const int printthings = 1;         //*TESTING* Flag to enable/disable printing on informations
 
 
@@ -294,12 +294,12 @@ if (TESTING != 0){
   API_Request();          //Get sunrise/sunset times
 
     Serial.print("millis = ");
-    Serial.println(millis());
-    Serial.print("start millis = ");
+    Serial.print(millis());
+    Serial.print(",   start millis = ");
     Serial.println(startmillis);
     Serial.print("epochstart = ");
-    Serial.println(epochstart);
-    Serial.print("epoch = ");
+    Serial.print(epochstart);
+    Serial.print(",   epoch = ");
     Serial.println(epoch);
 
 }
@@ -443,7 +443,6 @@ void DecodeEpoch(unsigned long currentTime)
   }
 
   if (printNTP ==1 && printthings ==1){
-  Serial.println();
   Serial.print("UTC Hour: ");
   Serial.print(hour);
   Serial.print(",   Minute: ");
@@ -495,8 +494,8 @@ void DecodeEpoch(unsigned long currentTime)
 
   if (printNTP ==1 && printthings ==1){
   Serial.print("UTC Clock - Mins from midnight = ");
-  Serial.println(clock_minutes_from_midnight);
-  Serial.print("Local - Clock - Mins from midnight = ");
+  Serial.print(clock_minutes_from_midnight);
+  Serial.print(",   Local - Clock - Mins from midnight = ");
   Serial.println(local_clock_minutes_from_midnight);
   Serial.println();
   Serial.println("****************");
@@ -593,13 +592,12 @@ void DecodeEpoch(unsigned long currentTime)
   Serial.println();
 
   Serial.print("local_sunrise_minutes_from_midnight = ");
-  Serial.println(local_sunrise_minutes_from_midnight);
-  Serial.print("local_sunset_minutes_from_midnight = ");
+  Serial.print(local_sunrise_minutes_from_midnight);
+  Serial.print(",   local_sunset_minutes_from_midnight = ");
   Serial.println(local_sunset_minutes_from_midnight);
-  Serial.println();
   Serial.print("sunrise_minutes_from_midnight = ");
-  Serial.println(sunrise_minutes_from_midnight);
-  Serial.print("sunset_minutes_from_midnight = ");
+  Serial.print(sunrise_minutes_from_midnight);
+  Serial.print(",   sunset_minutes_from_midnight = ");
   Serial.println(sunset_minutes_from_midnight);
   Serial.println();
   }
@@ -691,8 +689,8 @@ bool Check_Time() //This returns a bool value based on UDP time being received a
     }
     else
     {
-      Serial.println("epoch is good");
-      Serial.print("previously failed = ");
+      Serial.print("epoch is good");
+      Serial.print(",   previously failed = ");
       Serial.println(totalfailepoch);
       Serial.println("Making internal clock = new NTP time");
       Serial.println();
@@ -703,13 +701,11 @@ bool Check_Time() //This returns a bool value based on UDP time being received a
       startmillis = millis(); //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
     }
 
-      Serial.print("new NTP epoch  = ");
-      Serial.println(epoch);
-
-      Serial.print("Millis epoch  = ");
-      Serial.println(epoch2);
-
-      Serial.print("Difference (ms) = ");
+      Serial.print("new NTP epoch = ");
+      Serial.print(epoch);
+      Serial.print(",   Millis epoch = ");
+      Serial.print(epoch2);
+      Serial.print(",   Difference (ms) = ");
       Serial.println(abs(epoch - epoch2));
 
     LastNTP = millis(); //Set the last millis time the NTP time was attempted
@@ -774,16 +770,16 @@ void API_Request()
       sscanf(JSON_Extract("sunset").c_str(), "%d:%d:%*d %c", &hour_sunset, &minute_sunset, SS_AMPM);    //Get JSON for sunset (string) convert to const char and search for hours:minutes
 
       Serial.print("hour_sunrise = ");
-      Serial.println(hour_sunrise);
-      Serial.print("minute_sunrise = ");
-      Serial.println(minute_sunrise);
-      Serial.print("SR AMPM = ");
+      Serial.print(hour_sunrise);
+      Serial.print(",   minute_sunrise = ");
+      Serial.print(minute_sunrise);
+      Serial.print(",   SR AMPM = ");
       Serial.println(SR_AMPM);
       Serial.print("hour_sunset = ");
-      Serial.println(hour_sunset);
-      Serial.print("minute_sunset = ");
-      Serial.println(minute_sunset);
-      Serial.print("SS AMPM = ");
+      Serial.print(hour_sunset);
+      Serial.print(",   minute_sunset = ");
+      Serial.print(minute_sunset);
+      Serial.print(",   SS AMPM = ");
       Serial.println(SS_AMPM);
       Serial.println();
       Serial.println("****************");
@@ -1083,7 +1079,6 @@ BLYNK_WRITE(V3) // Widget WRITEs to Virtual Pin
 //Calculate LED colours phases on the phase of the sun using sunrise API data and NTP time converted to local time (using UTC offset)
 void DoTheLEDs()
 {
-  Serial.println();
   Serial.print("UTC Hour: ");
   Serial.print(hour);
   Serial.print(",   Minute: ");
@@ -1165,36 +1160,32 @@ void DoTheLEDs()
 
     
   Serial.print("clock_minutes_from_midnight (UTC) = ");
-  Serial.println(clock_minutes_from_midnight);
-  Serial.print("sunrise minutes_from_midnight (UTC) = ");
-  Serial.println(sunrise_minutes_from_midnight);
-  Serial.print("sunset_minutes_from_midnight (UTC) = ");
-  Serial.println(sunset_minutes_from_midnight);
-  Serial.println();
-  Serial.print("clock_minutes_from_midnight (local) = ");
+  Serial.print(clock_minutes_from_midnight);
+  Serial.print(",   clock_minutes_from_midnight (local) = ");
   Serial.println(local_clock_minutes_from_midnight);
-
-
-  Serial.println();
+  Serial.print("sunrise minutes_from_midnight (UTC) = ");
+  Serial.print(sunrise_minutes_from_midnight);
+  Serial.print(",   sunset_minutes_from_midnight (UTC) = ");
+  Serial.println(sunset_minutes_from_midnight);
   Serial.print("SecondsSinceLastNTP: ");
-  Serial.println(SecondsSinceLastNTP);
-  Serial.print("Startmillis: ");
-  Serial.println(startmillis);    
-  Serial.print("epochstart: ");
+  Serial.print(SecondsSinceLastNTP);
+  Serial.print(",   Startmillis: ");
+  Serial.print(startmillis);    
+  Serial.print(",   epochstart: ");
   Serial.println(epochstart);  
-  
+  Serial.println();  
   Serial.print("flash_phase = ");
-  Serial.println(flash_phase);
-  Serial.print("night = ");
-  Serial.println(night);
-  Serial.print("Sunrise phase = ");
-  Serial.println(SR_Phase);
-  Serial.print("Sunset phase = ");
+  Serial.print(flash_phase);
+  Serial.print(",   night = ");
+  Serial.print(night);
+  Serial.print(",   Sunrise phase = ");
+  Serial.print(SR_Phase);
+  Serial.print(",   Sunset phase = ");
   Serial.println(SS_Phase);
 
   Serial.print("Mins to Sunset phase = ");
-  Serial.println(sunset_minutes_from_midnight - clock_minutes_from_midnight - int(minswithin / 2));
-  Serial.print("Mins to Sunrise phase = ");
+  Serial.print(sunset_minutes_from_midnight - clock_minutes_from_midnight - int(minswithin / 2));
+  Serial.print(",   Mins to Sunrise phase = ");
   Serial.println(sunrise_minutes_from_midnight - clock_minutes_from_midnight - int(minswithin / 2));
   }
 
@@ -1239,8 +1230,7 @@ void DoTheLEDs()
   if (printthings == 1){
   Serial.print("LED_phase = ");
   Serial.print(LED_phase);
-  Serial.println();
-  Serial.print("red = ");
+  Serial.print(",   red = ");
   Serial.print(red);
   Serial.print(",   blue = ");
   Serial.print(blue);
@@ -1314,6 +1304,7 @@ void nightlight()
 //Calculate sunrise/sunset LED colours
 void sunrise_sunset(){
 
+//This piece flips SR and SS phases if requested by use of SRSS_use (for nightlight).  Not ideal way to do it but it works.
     int SR_Phase_use;
     int SS_Phase_use;
 
@@ -1338,9 +1329,10 @@ void sunrise_sunset(){
   }
 
 Serial.print("SR_Phase_use = ");
-Serial.println(SR_Phase_use);
-Serial.print("SS_Phase_use = ");
+Serial.print(SR_Phase_use);
+Serial.print(",   SS_Phase_use = ");
 Serial.println(SS_Phase_use);
+Serial.println();
 
     //sunrise:  Start with blue reducing to zero, and red increasing, when blue 0 increase green
   if (SR_Phase_use == 1 && blue >= 0)
@@ -1371,8 +1363,7 @@ Serial.println(SS_Phase_use);
     }
    }
 
-  
-  
+    
   //sunset:  Start with green reducing to zero, then reducing red to 0 and increasing blue
   if (SS_Phase_use == 1 && green > 0)
   {
