@@ -30,7 +30,6 @@
 // Note: After NTP time is received, internal Millis clock tracks time fairly acuratley, sunrise/set times only change once a day.
 // Note: NTP is UDP and can fail, there is a check that the new NTP time isn't too different from expected time.  If it is, it keeps using 
 // current time, unless it fails 3 times.  Then it will use NTP time (assumed after 3 times the NTP is correct afterall compared to Millis)
-// red/green/blue_nightlight variables allow you to specify the colour at night time.  These can be controlled by a Blynk app (virtual pins 1,2 & 3)
 // 
 // Other variables are self evident (hopefully).  Wifi credentials are stored in Platformoi.ini file ann injected during build.
 // If not using PlatformOI, you can enter directly into the code in the 1st lines of 'Things to change'
@@ -92,10 +91,21 @@
 int flash_mins = 1;                 //minutes to flash after the hourh  e.g 1 = 1min:  5pm - 5.01pm
 int flash_delay = 60;               //delay between LED flashes (ms)
 
-//What colour to go when in night light mode (e.g no sunrise/sunset)
-int green_nightlight = 128;        //Night RGB LED settings for night lightmode
-int blue_nightlight = 0;           //Night RGB LED settings for night light mode
-int red_nightlight = 255;          //Night RGB LED settings for night light mode
+//Max values for LEDs
+const int green_max = 128;          //green (128 for yellow / 255 for orange)
+const int blue_max = 255;           
+const int red_max = 255;            
+
+//What lamp looks like for day time
+const int green_day = 128;          //green (128 for yellow / 255 for orange)
+const int blue_day = 0;
+const int red_day = 255;
+
+//What lamp looks like for night
+const int green_night = 0;
+const int blue_night = 255;
+const int red_night = 0;
+
 
 //Lamp brightness
 const int howbright = 255;         //0-255 LED Brightness level
@@ -157,13 +167,13 @@ byte packetBuffer[NTP_PACKET_SIZE];                                             
 unsigned long epoch = 0, lastepoch = 0, LastNTP = 0, LastAPI, LastLED, epochstart, startmillis; //Unix time in seconds
 int lastepochcount = 0, totalfailepoch = 0;
 int hour, minute, second;               //UTC time
-int clock_minutes, local_clock_minutes; //Minutes from midnight
+int clock_minutes_from_midnight, local_clock_minutes_from_midnight; //Minutes from midnight
 int NTPSeconds_to_wait = 1;         //Initial wait time between NTP/Sunrise pulls (1 sec)
 String clock_AMPM;                  //AM/PM from NTP Server
 int printNTP=0;                     //Set to 1 when a NTP is pulled.  The decodeepoch function used for both NTP epoch and millis epoch.  printNTP=1 in this fucnction only print new NTP results (time).
 int SecondsSinceLastNTP;            //Counts seconds since last NTP pull
 unsigned long epoch2;               //Used to calculate Millis drift/difference with NTP
-int timefactor;                     //accellerate time by this factor (for testing)
+int timefactor = 1;                     //accellerate time by this factor (for testing)
 
 //LED Flash variables
 int flash_phase = 0;               //If x minutes within top of hour flash the LEDs
@@ -175,27 +185,23 @@ int flash_working = 0;             //working var for sinearray (ranges 0-31)
 char sinetable[]= {127,152,176,198,217,233,245,252,254,252,245,233,217,198,176,152,128,103,79,57,38,22,38,57,79,103};
 
 //Sunrise - Sunset API variables
-int h_sunrise, hour_sunrise, minute_sunrise, local_minutes_to_sunrise;
+int h_sunrise, hour_sunrise, minute_sunrise, sunrise_minutes_from_midnight, local_sunrise_minutes_from_midnight;
 int SR_Phase = 0;                             //1 = in Sunrise phase (30 mins either side if minwithin = 60mins)
-int h_sunset, hour_sunset, minute_sunset, local_minutes_to_sunset;
+int h_sunset, hour_sunset, minute_sunset, sunset_minutes_from_midnight, local_sunset_minutes_from_midnight;
 int SS_Phase = 0;                             //1 = in Sunset phase (30 mins either side if minwithin = 60mins)
-int hourtomin = 0;                            //Used to convert hours into total minutes
+int working_hourtomin = 0;                            //Used to convert hours into total minutes
 float LED_phase;                              //0-255 in the phase of sunrise/set   0=begining 255=end
 char SR_AMPM[1], SS_AMPM[1];                  //Sunrise/set AMPM
 String AMPM, sunAPIresponse;
 struct CRGB leds[NUM_LEDS_PER_STRIP];         //initiate FastLED with number of LEDs
 String JSON_Extract(String);
 char mode [4];                                //Used to get input from webpage
+int SRSS_use = 0;                                 //Used to manipulate SR and SS varible if in nightlight mode
 
 //LED Variables. Hold the value (0-255) of each primary colour
 int green = 0; 
 int blue = 0;
 int red = 0;
-
-//What yellow looks like for day time
-const int green_daynight = 128;  //Day RGB LED settings for day/night mode (Yellow)
-const int blue_daynight = 0;     //Day RGB LED settings for day/night mode (Yellow)
-const int red_daynight = 255;    //Day RGB LED settings for day/night mode (Yellow)
 
 //Functions declared
 void nightlight ();                             //function if in nightlight mode
@@ -210,7 +216,7 @@ void sendNTPpacket (const IPAddress &address);  //Get data
 void ConnectToAP ();                            //connect to WiFi Access point
 void WiFi_and_Credentials();                    //Get WiFi credentials if using WiFi manager option (also connects to access point)
 void checkreset();                              //Check if reset button has been pressed
-
+void sunrise_sunset();                          //Calculate sunrise/sunset LED colours
 
 void setup()
 {
@@ -271,13 +277,14 @@ void setup()
 if (TESTING != 0){
 
   flash = 0;                  //Turn off flash if in testing mode
-  NTPSecondstowait = 60;  //Wait between NTP pulls (sec)
-  APISecondstowait = 600;  //Wait between Sunrise API pulls (sec) 
-  timefactor = 1;            //accellerate time by this factor
+  NTPSecondstowait = 600;     //Wait between NTP pulls (sec)
+  APISecondstowait = 600;     //Wait between Sunrise API pulls (sec) 
+  timefactor = 10;            //accellerate time by this factor
   lightmode = 0;              //overide lightmode
   TARDIS = 3;                 //overide top light
-  localUTC = 3;               //overide UTC
-  sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=55.755825&lng=37.617298");
+  localUTC = 12;               //overide UTC
+  sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762");
+
  Serial.print("TEST sunrise_api_request = ");
  Serial.println(sunrise_api_request);
  }
@@ -294,8 +301,6 @@ if (TESTING != 0){
     Serial.println(epochstart);
     Serial.print("epoch = ");
     Serial.println(epoch);
-    Serial.print("minutes = ");
-    Serial.println(minute); 
 
 }
 
@@ -329,8 +334,7 @@ void loop()
     Serial.println(epochstart);
     Serial.print("epoch = ");
     Serial.println(epoch);
-    Serial.print("minutes = ");
-    Serial.println(minute); 
+    Serial.println("");
 
     Request_Time();         //Get the time
     printNTP=1;             //1 is a flag to serialprint the time (only used for NTP pull not for millis updates)
@@ -358,7 +362,7 @@ void loop()
   }
   }
 
-  //Epoch has been updated using NTP pull or counting Millis.  Now turn this into Clock_Minutes
+  //Epoch has been updated using NTP pull or counting Millis.  Now turn this into clock_minutes_from_midnight
   DecodeEpoch(epoch);     //Turn epoch time into Hours Minutes Seconds
 
   //Check if it's time to get Sunrise/Set times
@@ -391,191 +395,6 @@ void loop()
 
 
 
-//Check if flash is required and manipulate brightness
-void checkflash (){ 
-
-  //Check for x minutes within top of hour to do flash.  Only do this is flash is enabled in set up (flash =1)
-  if (flash == 1){
-
-  flash_phase = 0;
-  if (minute < flash_mins){        //minutes = 0 at top of hour, so just check minutes is less or equal to the flash period
-    flash_phase = 1;
-  }
-    }
-
-
-  //If in flash mode then do the flash routine
-  if (flash_phase == 1){
-
-  //Check if the required time has passed to flash
-  if (millis() - LastFlashmillis >= flash_delay){
-    LastFlashmillis = millis();
-    
-    FastLED.setBrightness(howbright * sinetable[flash_working]);
-    FastLED.show();
-
-    flash_working = flash_working + 1;
-
-    //return to begining of sequence
-    if (flash_working == 26){
-      flash_working = 0;
-    }
-    } 
-  }
-  }
-
-
-//Check if reset button pressed.  D3 / GPIO0 held to ground.
-void checkreset(){
-    if (digitalRead(0) == 0){
-      delay(500);             //500ms for button bounce
-      if (digitalRead(0) == 0){
-
-  //LEDs off 
-  fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(0, 0, 0));
-    FastLED.setBrightness(howbright);
-      FastLED.show();        
-    Serial.println("** RESET **");
-    Serial.println("** RESET **");
-    Serial.println("** RESET **");
-      SPIFFS.remove("\" & HTTPfilename");
-      SPIFFS.remove("\" & Modefilename");
-      SPIFFS.remove("\" & UTCfilename");      
-      SPIFFS.format();
-      WiFi.disconnect();
-
-    delay(2500);
-      ESP.restart();
-    }
-      }
-} 
-
-
-//Calculate LED colours phases on the phase of the sun using sunrise API data and NTP time converted to local time (using UTC offset)
-void DoTheLEDs()
-{
-  //Check for sunrise.  Clock_minutes is time in minutes from midnight.  Sunrise/set minutes is LOCAL time from API
-  if (local_clock_minutes >= (local_minutes_to_sunrise - (minswithin / 2)) && local_clock_minutes <= (local_minutes_to_sunrise + (minswithin / 2)))
-  {
-    SR_Phase = 1;
-    LED_phase = ((local_clock_minutes - local_minutes_to_sunrise) + (minswithin / 2)) / (float)minswithin * 255;
-  }
-  else
-  {
-    SR_Phase = 0;
-  }
-
-  //Check for sunset.  Clock_minutes is time in minutes from midnight.  Sunrise/set minutes is LOCAL time from API
-  if (local_clock_minutes >= (local_minutes_to_sunset - (minswithin / 2)) && local_clock_minutes <= (local_minutes_to_sunset + (minswithin / 2)))
-  {
-    SS_Phase = 1;
-    LED_phase = ((local_clock_minutes - local_minutes_to_sunset) + (minswithin / 2)) / (float)minswithin * 255;
-  }
-  else
-  {
-    SS_Phase = 0;
-  }
-
-  //if it's not in sunrise or sunset sequence then find out if it's day (yellow) or night (blue) and set colour
-  //Using Local UTC (don't care about daylight saving) for day or night
-  if (local_clock_minutes > local_minutes_to_sunrise && local_clock_minutes < local_minutes_to_sunset)
-  {
-    night = 0;
-  }
-  else
-  {
-    night = 1;
-  }
-
-  if (printthings == 1){
-
-    
-  Serial.print("clock_minutes (UTC) = ");
-  Serial.println(clock_minutes);
-  Serial.print("clock_minutes (local) = ");
-  Serial.println(local_clock_minutes);
-
-  Serial.println();
-  Serial.print("SecondsSinceLastNTP: ");
-  Serial.println(SecondsSinceLastNTP);
-  Serial.print("Startmillis: ");
-  Serial.println(startmillis);    
-  Serial.print("epochstart: ");
-  Serial.println(epochstart);  
-  Serial.print("Hour: ");
-  Serial.print(hour);
-  Serial.print(",   Minute: ");
-  Serial.print(minute);
-  Serial.print(",   Second: ");
-  Serial.println(second);
-  
-  Serial.print("flash_phase = ");
-  Serial.println(flash_phase);
-  Serial.print("night = ");
-  Serial.println(night);
-  Serial.print("Sunrise phase = ");
-  Serial.println(SR_Phase);
-  Serial.print("Sunset phase = ");
-  Serial.println(SS_Phase);
-  Serial.print("Mins to Sunset phase = ");
-  Serial.println(local_minutes_to_sunset - local_clock_minutes - int(minswithin / 2));
-  Serial.print("Mins to Sunrise phase = ");
-  Serial.println(local_minutes_to_sunrise - local_clock_minutes - int(minswithin / 2));
-  }
-
-  //call function to select LED colours for either all day/night or just nightlight
-  if (lightmode == 0)
-  {
-    daynight();
-  }
-
-  if (lightmode == 1 || lightmode == 2)
-  {
-    nightlight();
-  }
-
-  fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(red, green, blue));
-
-  //Set the top light:  0=Same as other LEDs, 1=Red, 2=Green, 3=Blue, 4=White
-  if (TARDIS ==1)
-  {
-    leds[NUM_LEDS_PER_STRIP - 1].setRGB(255, 0, 0);     //Light on top of TARDIS Red
-  }
-
-  if (TARDIS ==2)
-  {
-    leds[NUM_LEDS_PER_STRIP - 1].setRGB(0, 255, 0);     //Light on top of TARDIS Green
-  }
-
-  if (TARDIS ==3)
-  {
-    leds[NUM_LEDS_PER_STRIP - 1].setRGB(0, 0, 255);     //Light on top of TARDIS Blue
-  }
-
-  if (TARDIS ==4)
-  {
-    leds[NUM_LEDS_PER_STRIP - 1].setRGB(255, 255, 255);     //Light on top of TARDIS White
-  }
-
-  
-  FastLED.setBrightness(howbright);
-  FastLED.show();
-
-  if (printthings == 1){
-  Serial.print("LED_phase = ");
-  Serial.print(LED_phase);
-  Serial.println();
-  Serial.print("red = ");
-  Serial.print(red);
-  Serial.print(",   blue = ");
-  Serial.print(blue);
-  Serial.print(",   green = ");
-  Serial.println(green);
-  Serial.println();
-  Serial.println("****************");
-  Serial.println();
-  }
-}
 
 
 
@@ -625,7 +444,7 @@ void DecodeEpoch(unsigned long currentTime)
 
   if (printNTP ==1 && printthings ==1){
   Serial.println();
-  Serial.print("Hour: ");
+  Serial.print("UTC Hour: ");
   Serial.print(hour);
   Serial.print(",   Minute: ");
   Serial.print(minute);
@@ -636,123 +455,153 @@ void DecodeEpoch(unsigned long currentTime)
   
 
   //Work out Hours/min into minutes from midnight to Calculate if it's AM or PM time
-  hourtomin = hour;
+  working_hourtomin = hour;
 
   //PM add 12
   if (clock_AMPM == "PM")
   {
-    hourtomin = hour + 12;
+    working_hourtomin = hour + 12;
   }
 
   //Midnight = 0
   if (clock_AMPM == "AM" && hour == 12)
   {
-    hourtomin = 0;
+    working_hourtomin = 0;
   }
 
   //Noon = 12
   if (clock_AMPM == "PM" && hour == 12)
   {
-    hourtomin = 12;
+    working_hourtomin = 12;
   }
 
-  clock_minutes = ((hourtomin * 60) + minute);
+  clock_minutes_from_midnight = ((working_hourtomin * 60) + minute);
 
   //Get local minutes for day/night calc
-  local_clock_minutes = clock_minutes+ (localUTC * 60);
+  local_clock_minutes_from_midnight = clock_minutes_from_midnight+ (localUTC * 60);
 
-  if (local_clock_minutes > 1440)
+  //If local_minutes is negative (e.g Negative UTC)
+  if (local_clock_minutes_from_midnight > 1440)
   {
-    local_clock_minutes = local_clock_minutes - 1440;
+    local_clock_minutes_from_midnight = local_clock_minutes_from_midnight - 1440;
   }
+
+    //If local_minutes is negative (e.g Negative UTC)
+  if (local_clock_minutes_from_midnight <0 )
+  {
+    local_clock_minutes_from_midnight = local_clock_minutes_from_midnight + 1440;
+  }
+
 
   if (printNTP ==1 && printthings ==1){
   Serial.print("UTC Clock - Mins from midnight = ");
-  Serial.println(clock_minutes);
+  Serial.println(clock_minutes_from_midnight);
   Serial.print("Local - Clock - Mins from midnight = ");
-  Serial.println(local_clock_minutes);
+  Serial.println(local_clock_minutes_from_midnight);
   Serial.println();
   Serial.println("****************");
   Serial.println();
   }
   
   //Work out Hours/min into minutes from midnight
-  hourtomin = hour_sunrise;
+  working_hourtomin = hour_sunrise;
 
   //PM add 12
   if (strcmp(SR_AMPM, "P") == 0)
   {
-    hourtomin = hour_sunrise + 12;
+    working_hourtomin = hour_sunrise + 12;
   }
 
   //Midnight = 0
   if (strcmp(SR_AMPM, "A") == 0 && hour_sunrise == 12)
   {
-    hourtomin = 0;
+    working_hourtomin = 0;
   }
 
   //Noon = 12
   if (strcmp(SR_AMPM, "P") == 0 && hour_sunrise == 12)
   {
-    hourtomin = 12;
+    working_hourtomin = 12;
   }
 
-  local_minutes_to_sunrise = ((hourtomin * 60) + minute_sunrise);
+  
 
-  //Get to local minutes for day/night calc
-  if (local_minutes_to_sunrise > 1440)
+  //UTC number of minutes from midnight until sunrise
+  sunrise_minutes_from_midnight = ((working_hourtomin * 60) + minute_sunrise);   
+
+  //Convert UTC sunrise_minutes_from_midnight into local_sunrise_minutes_from_midnight with UTC
+  local_sunrise_minutes_from_midnight = sunrise_minutes_from_midnight + (localUTC * 60);
+
+  //If local_minutes is greater than 1 day (e.g large postive UTC)
+  if (local_sunrise_minutes_from_midnight > 1440)
   {
-    local_minutes_to_sunrise = local_minutes_to_sunrise - 1440;
+    local_sunrise_minutes_from_midnight = local_sunrise_minutes_from_midnight - 1440;
+  }
+
+  //If local_minutes is negative (e.g Negative UTC)
+  if (local_sunrise_minutes_from_midnight <0 )
+  {
+    local_sunrise_minutes_from_midnight = local_sunrise_minutes_from_midnight + 1440;
   }
 
   //Work out Hours/min into minutes from midnight
-  hourtomin = hour_sunset;
+  working_hourtomin = hour_sunset;
 
   //PM add 12
   if (strcmp(SS_AMPM, "P") == 0)
   {
-    hourtomin = hour_sunset + 12;
+    working_hourtomin = hour_sunset + 12;
   }
 
   //Midnight = 0
   if (strcmp(SS_AMPM, "A") == 0 && hour_sunset == 12)
   {
-    hourtomin = 0;
+    working_hourtomin = 0;
   }
 
   //Noon = 12
   if (strcmp(SS_AMPM, "P") == 0 && hour_sunset == 12)
   {
-    hourtomin = 12;  Serial.println();
-  Serial.print("Hour: ");
+    working_hourtomin = 12;  Serial.println();
+  }
+
+ 
+  sunset_minutes_from_midnight = ((working_hourtomin * 60) + minute_sunset);
+
+  //Convert UTC sunrise_minutes_from_midnight into local_sunrise_minutes_from_midnight with UTC
+  local_sunset_minutes_from_midnight = sunset_minutes_from_midnight + (localUTC * 60);
+
+  //If local_minutes is greater than 1 day (e.g large postive UTC)
+  if (local_sunset_minutes_from_midnight > 1440)
+  {
+    local_sunset_minutes_from_midnight = local_sunset_minutes_from_midnight - 1440;
+  }
+  
+  //If local_minutes is negative (e.g Negative UTC)
+  if (local_sunset_minutes_from_midnight <0 )
+  {
+    local_sunset_minutes_from_midnight = local_sunset_minutes_from_midnight + 1440;
+  }
+
+  if (printthings ==1 && printNTP == 1){
+  Serial.print("UTC Hour: ");
   Serial.print(hour);
   Serial.print(",   Minute: ");
   Serial.print(minute);
   Serial.print(",   Second: ");
   Serial.println(second);
   Serial.println();
-  }
 
-  local_minutes_to_sunset = ((hourtomin * 60) + minute_sunset);
-
-  if (local_minutes_to_sunset > 1440)
-  {
-    local_minutes_to_sunset = local_minutes_to_sunset - 1440;
-  }
-
-  if (printthings ==1 && printNTP == 1){
-  Serial.print("hour_sunrise = ");
-  Serial.println(hour_sunrise);
-
-  Serial.print("Sunrise - Mins from midnight = ");
-  Serial.println(local_minutes_to_sunrise);
-  Serial.print("Local - Sunrise - Mins from midnight = ");
-  Serial.println(local_minutes_to_sunrise);
+  Serial.print("local_sunrise_minutes_from_midnight = ");
+  Serial.println(local_sunrise_minutes_from_midnight);
+  Serial.print("local_sunset_minutes_from_midnight = ");
+  Serial.println(local_sunset_minutes_from_midnight);
   Serial.println();
-  Serial.print("Sunset - Mins from midnight = ");
-  Serial.println(local_minutes_to_sunset);
+  Serial.print("sunrise_minutes_from_midnight = ");
+  Serial.println(sunrise_minutes_from_midnight);
+  Serial.print("sunset_minutes_from_midnight = ");
+  Serial.println(sunset_minutes_from_midnight);
   Serial.println();
-
   }
 }
 
@@ -1215,186 +1064,404 @@ String JSON_Extract(String lookfor)
 /*
 BLYNK_WRITE(V1) // Widget WRITEs to Virtual Pin
 {   
-  red_nightlight  = param.asInt(); // getting first value
+  red_max  = param.asInt(); // getting first value
 }
 
 BLYNK_WRITE(V2) // Widget WRITEs to Virtual Pin
 {   
-  green_nightlight = param.asInt(); // getting N value
+  green_max = param.asInt(); // getting N value
 }
 
 BLYNK_WRITE(V3) // Widget WRITEs to Virtual Pin
 {   
-  blue_nightlight = param.asInt(); // getting second value
+  blue_max = param.asInt(); // getting second value
   }
 */
 
 
 
-void daynight()
+//Calculate LED colours phases on the phase of the sun using sunrise API data and NTP time converted to local time (using UTC offset)
+void DoTheLEDs()
 {
-  //sunrise:  Start with blue reducing to zero, and red increasing then green increases
+  Serial.println();
+  Serial.print("UTC Hour: ");
+  Serial.print(hour);
+  Serial.print(",   Minute: ");
+  Serial.print(minute);
+  Serial.print(",   Second: ");
+  Serial.println(second);
+  Serial.println();
+ 
+  //Check for sunrise.  clock_minutes_from_midnight is time in minutes from midnight.  Sunrise/set minutes and clock are both UTC
+  //Only compare UTC with UTC as local time (using UTC offset can change with daylight savings).  Local only for figuring out if it's night or day
 
-  if (SR_Phase == 1 && blue >= 0)
+
+  //Corrected Sunrise/Set and time variables
+  int sunrise_minutes_from_midnight_corrected = sunrise_minutes_from_midnight;
+  int sunset_minutes_from_midnight_corrected = sunset_minutes_from_midnight;
+  int clock_minutes_from_midnight_corrected = clock_minutes_from_midnight;
+
+
+  //e.g SR 0020 means 30mins before and 30 after would be 1430:0050.  Different timelines are difficult to compare.  Make 0020 = 1460 (1440 + 0020) then 30mins before/after:  1430:1490
+  //Need to correct time 
+  if (sunrise_minutes_from_midnight < (minswithin/2)){
+      sunrise_minutes_from_midnight_corrected = sunrise_minutes_from_midnight + 1440;
+
+      //if Sunrise corrected then correct time is also in the same way
+      if (clock_minutes_from_midnight < (minswithin/2)){
+      clock_minutes_from_midnight_corrected = clock_minutes_from_midnight + 1440;
+    
+      Serial.println("*sunrise period spans midnight UTC - corrected");
+  }
+    }
+
+  if (sunset_minutes_from_midnight < (minswithin/2)){
+      sunset_minutes_from_midnight_corrected = sunset_minutes_from_midnight + 1440;
+
+      //if Sunrise corrected then correct time is also in the same way
+      if (clock_minutes_from_midnight < (minswithin/2)){
+      clock_minutes_from_midnight_corrected = clock_minutes_from_midnight + 1440;
+    
+      Serial.println("*sunset period spans midnight UTC - corrected");
+  }
+    }
+
+
+  //Check for Sunrise phase
+  if (clock_minutes_from_midnight_corrected >= (sunrise_minutes_from_midnight_corrected - (minswithin/2))  && clock_minutes_from_midnight_corrected <= (sunrise_minutes_from_midnight_corrected + (minswithin/2)))
   {
-    //in first part of sunset (reduce blue, increase red)
-
-    blue = blue_daynight - (LED_phase * change * 2); //work out 0 - 255 for sunset.  4 Because in 2 phases (/2) and green starts at 128 (/4)
-
-    if (blue < 0)
-    {
-      blue = 0;
-    }
-
-    red = abs(255 - (LED_phase * change * 2)); //work out 0 - 255 for sunset.
-
-    if (red >= 255)
-    {
-      red = 255;
-    }
+    SR_Phase = 1;
+    LED_phase = ((clock_minutes_from_midnight_corrected - sunrise_minutes_from_midnight_corrected) + (minswithin / 2)) / (float)minswithin * 255;
+  }
+  else
+  {
+    SR_Phase = 0;
   }
 
-  if (SR_Phase == 1 && blue == 0)
+
+  //Check for sunset.  clock_minutes_from_midnight is time in minutes from midnight.  Sunrise/set minutes is LOCAL time from API
+  if (clock_minutes_from_midnight_corrected >= (sunset_minutes_from_midnight_corrected - (minswithin/2)) && clock_minutes_from_midnight_corrected <= (sunset_minutes_from_midnight_corrected + (minswithin / 2)))
   {
-    //in second part of sunrise (increase green)
-
-    green = abs(255 - (LED_phase * change * 2)); //work out 0 - 255 for sunset.
-
-    if (green > 255)
-    {
-      green = 255;
-    }
+    SS_Phase = 1;
+    LED_phase = ((clock_minutes_from_midnight_corrected - sunset_minutes_from_midnight_corrected) + (minswithin / 2)) / (float)minswithin * 255;
+  }
+  else
+  {
+    SS_Phase = 0;
   }
 
-  //sunset:  Start with green reducing to zero, only then red reduces @ same rate that blue increases
-
-  if (SS_Phase == 1 && green >= 0)
+  //if it's not in sunrise or sunset sequence then find out if it's day (yellow) or night (blue) and set colour
+  //Using Local UTC (don't care about daylight saving) for day or night
+  if (local_clock_minutes_from_midnight > local_sunrise_minutes_from_midnight && local_clock_minutes_from_midnight < local_sunset_minutes_from_midnight)
   {
-    //in first part of sunset (reduce green only)
-
-    green = green_daynight - (int)LED_phase; //work out 0 - 255 for sunset.  4 Because in 2 phases (/2) and green starts at 128 (/4)
-
-    if (green < 0)
-    {
-      green = 0;
-    }
+    night = 0;
+  }
+  else
+  {
+    night = 1;
   }
 
-  if (SS_Phase == 1 && green == 0)
-  {
-    //in second part of sunset (reduce red, increase blue)
+  if (printthings == 1){
 
-    red = 255 - abs(255 - (LED_phase * change * 2)); //work out 0 - 255 for sunset
-    blue = abs(255 - (LED_phase * change * 2));      //work out 0 - 255 for sunset.
+    
+  Serial.print("clock_minutes_from_midnight (UTC) = ");
+  Serial.println(clock_minutes_from_midnight);
+  Serial.print("sunrise minutes_from_midnight (UTC) = ");
+  Serial.println(sunrise_minutes_from_midnight);
+  Serial.print("sunset_minutes_from_midnight (UTC) = ");
+  Serial.println(sunset_minutes_from_midnight);
+  Serial.println();
+  Serial.print("clock_minutes_from_midnight (local) = ");
+  Serial.println(local_clock_minutes_from_midnight);
 
-    if (red < 0)
-    {
-      red = 0;
-    }
 
-    if (blue > 255)
-    {
-      blue = 255;
-    }
+  Serial.println();
+  Serial.print("SecondsSinceLastNTP: ");
+  Serial.println(SecondsSinceLastNTP);
+  Serial.print("Startmillis: ");
+  Serial.println(startmillis);    
+  Serial.print("epochstart: ");
+  Serial.println(epochstart);  
+  
+  Serial.print("flash_phase = ");
+  Serial.println(flash_phase);
+  Serial.print("night = ");
+  Serial.println(night);
+  Serial.print("Sunrise phase = ");
+  Serial.println(SR_Phase);
+  Serial.print("Sunset phase = ");
+  Serial.println(SS_Phase);
+
+  Serial.print("Mins to Sunset phase = ");
+  Serial.println(sunset_minutes_from_midnight - clock_minutes_from_midnight - int(minswithin / 2));
+  Serial.print("Mins to Sunrise phase = ");
+  Serial.println(sunrise_minutes_from_midnight - clock_minutes_from_midnight - int(minswithin / 2));
   }
+
+  //call function to select LED colours for either all day/night or just nightlight
+  if (lightmode == 0)
+  {
+    daynight();
+  }
+
+  if (lightmode == 1 || lightmode == 2)
+  {
+    nightlight();
+  }
+
+  fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(red, green, blue));
+
+  //Set the top light:  0=Same as other LEDs, 1=Red, 2=Green, 3=Blue, 4=White
+  if (TARDIS ==1)
+  {
+    leds[NUM_LEDS_PER_STRIP - 1].setRGB(255, 0, 0);     //Light on top of TARDIS Red
+  }
+
+  if (TARDIS ==2)
+  {
+    leds[NUM_LEDS_PER_STRIP - 1].setRGB(0, 255, 0);     //Light on top of TARDIS Green
+  }
+
+  if (TARDIS ==3)
+  {
+    leds[NUM_LEDS_PER_STRIP - 1].setRGB(0, 0, 255);     //Light on top of TARDIS Blue
+  }
+
+  if (TARDIS ==4)
+  {
+    leds[NUM_LEDS_PER_STRIP - 1].setRGB(255, 255, 255);     //Light on top of TARDIS White
+  }
+
+  
+  FastLED.setBrightness(howbright);
+  FastLED.show();
+
+  if (printthings == 1){
+  Serial.print("LED_phase = ");
+  Serial.print(LED_phase);
+  Serial.println();
+  Serial.print("red = ");
+  Serial.print(red);
+  Serial.print(",   blue = ");
+  Serial.print(blue);
+  Serial.print(",   green = ");
+  Serial.println(green);
+  Serial.println();
+  Serial.println("****************");
+  Serial.println();
+  }
+}
+
+
+//daunight mode:  yellow during day, blue at night
+void daynight()
+
+{
+  SRSS_use = 0;             //0=Normal sunrise/sunset
+  sunrise_sunset();
 
   //It's night and not in sunrise or sunset mode
   if (SR_Phase == 0 && SS_Phase == 0 && night == 1)
   {
-    blue = 255;
-    green = 0;
-    red = 0;
+    blue = blue_night;
+    green = green_night;
+    red = red_night;
   }
 
   //It's day and not in sunrise or sunset mode
   if (SR_Phase == 0 && SS_Phase == 0 && night == 0)
   {
-    blue = 0;
-    green = 128;
-    red = 255;
+    blue = blue_day;
+    green = green_day;
+    red = red_day;
   }
 }
 
+
+//nightlight mode:  Off during day, yellow during night
 void nightlight()
 {
-  //sunset:  Start with blue reducing to zero, and red increasing then green increases
+  SRSS_use = 1;         //0=Inverted sunrise/sunset        
+  sunrise_sunset();     //calculate LEDs
 
-  if (SS_Phase == 1 && blue >= 0)
-  {
-
-    blue = 255 - (LED_phase * change); //work out 0 - 255 for sunset.  4 Because in 2 phases (/2) and green starts at 128 (/4)
-
-    if (blue < 0)
-    {
-      blue = 0;
-    }
-  }
-
-  red = 0 + (LED_phase * change); //work out 0 - 255 for sunset.
-
-  if (red >= 255)
-  {
-    red = 255;
-  }
-
-  if (SS_Phase == 1 && blue == 0)
-  {
-    //in second part of sunrise (increase green)
-
-    green = 255 - (LED_phase * change); //work out 0 - 255 for sunset.
-
-    if (green > 128)
-    {
-      green = 128;
-    }
-  }
-
-  //sunrise:  Start with green reducing to zero, only then red reduces @ same rate that blue increases
-
-  if (SR_Phase == 1 && green >= 0)
-  {
-    //in first part of sunset (reduce green only)
-
-    green = 128 - (LED_phase * change); //work out 0 - 255 for sunset.  4 Because in 2 phases (/2) and green starts at 128 (/4)
-    red = 255 - (LED_phase * change);
-
-    if (green < 0)
-    {
-      green = 0;
-    }
-  }
-
-  if (SR_Phase == 1 && green == 0)
-  {
-    //in second part of sunrise (reduce red, increase blue)
-
-    red = 255 - (LED_phase * change);
-    blue = LED_phase * change; //work out 0 - 255 for sunset.
-
-    if (red < 0)
-    {
-      red = 0;
-    }
-
-    if (blue > 255)
-    {
-      blue = 255;
-    }
-  }
-
-  //It's day and not in sunrise or sunset mode  or  if it's in lightmode 2 (ignore sunrise/set changes) then fore into Day or Night LED colours
-  if (((SR_Phase == 0 && SS_Phase == 0) || lightmode == 2) && night == 0)
+  //It's day and not in sunrise or sunset mode  or if it's in lightmode 1 (ignore sunrise/set changes) then force into Day or Night LED colours
+  if (SR_Phase == 0 && SS_Phase == 0 && lightmode == 1 && night == 0)      //Not in Sunrise/set phase, I'm in mode 1 and it's daytime - LEDs off
   {
     blue = 0;
     green = 0;
     red = 0;
   }
 
-  //It's night and not in sunrise or sunset mode  or  if it's in lightmode 2 (ignore sunrise/set changes) then fore into Day or Night LED colours
-  if (((SR_Phase == 0 && SS_Phase == 0) || lightmode == 2) && night == 1)
+  //It's night and not in sunrise or sunset mode  or  if it's in lightmode 1 (ignore sunrise/set changes) then fore into Day or Night LED colours
+  if (SR_Phase == 0 && SS_Phase == 0 && lightmode == 1 && night == 1)       //Not in Sunrise/set phase, I'm in mode 1 and it's night time - LEDs yellow
   {
-    blue = blue_nightlight; 
-    green = green_nightlight;
-    red = red_nightlight;
+    blue = blue_day;
+    green = green_day;
+    red = red_day;
+  }
+  
+  //It's night and lightmode 2 then force into nightlight (yellow)
+  if (lightmode = 2 && night == 1)    //I'm in mode 2, I don't care about sunrise/set phases - it's night time - LEDs yellow
+  {
+    blue = blue_day;
+    green = green_day;
+    red = red_day;
+  }
+
+
+}
+
+//Calculate sunrise/sunset LED colours
+void sunrise_sunset(){
+
+    int SR_Phase_use;
+    int SS_Phase_use;
+
+  if (SR_Phase == 1 && SRSS_use == 0){
+    SR_Phase_use = 1;
+    SS_Phase_use = 0;
+  }
+
+  if (SR_Phase == 1 && SRSS_use == 1){
+    SR_Phase_use = 0;
+    SS_Phase_use = 1;
+  }
+
+  if (SS_Phase == 1 && SRSS_use == 0){
+    SR_Phase_use = 0;
+    SS_Phase_use = 1;
+  }
+
+  if (SS_Phase == 1 && SRSS_use == 1){
+    SR_Phase_use = 1;
+    SS_Phase_use = 0;
+  }
+
+Serial.print("SR_Phase_use = ");
+Serial.println(SR_Phase_use);
+Serial.print("SS_Phase_use = ");
+Serial.println(SS_Phase_use);
+
+    //sunrise:  Start with blue reducing to zero, and red increasing, when blue 0 increase green
+  if (SR_Phase_use == 1 && blue >= 0)
+  {
+    //in first part of sunrise (reduce blue / increase red)
+    blue = blue_max - (LED_phase * 2); //LED Phase 0-128,  *2 as in 1st phase we need 0-255 of LED movement for blue & red
+    red = 0 + (LED_phase  * 2);
+
+    if (blue < 0)
+    {
+      blue = 0;
+    }
+    if (red > red_max)
+    {
+      red = red_max;
+    }
+    green = 0;     //force in case lamp started during phase
+  }
+
+  if (SR_Phase_use == 1 && blue == 0)
+  {
+    //in second part of sunrise (increase green)
+    green = 0 + abs(LED_phase - 128);  //LED Phase 128-255, need to be 0 to start green LED movement (0-128)
+    
+    if (green > green_max)
+    {
+      green = green_max;
+    }
+   }
+
+  
+  
+  //sunset:  Start with green reducing to zero, then reducing red to 0 and increasing blue
+  if (SS_Phase_use == 1 && green > 0)
+  {
+    green = green_max - (LED_phase);     //LED Phase 0-128, reduce green from 128 > 0
+    
+    if (green < 0)
+    {
+      green = 0;
+    }
+
+    blue = 0;     //force in case lamp started during phase
+  }
+
+    if (SS_Phase_use == 1 && green == 0)
+  {
+    //in second part of sunset increase blue and rdecrease red
+    blue = 0 + (abs(LED_phase-128) *2);           //LED Phase 128-255, subtract 128 (gives range 0-128) then x2 (range 0-255)
+    red = red_max - (abs(LED_phase-128) *2); //LED Phase 128-255, subtract 128 (gives range 0-128) then x2 (range 0-255)
+
+    if (blue > blue_max )
+    {
+      blue = blue_max;
+    }
+
+    if (red < 0)
+    {
+      red = 0;
+    }
   }
 }
+
+//Check if flash is required and manipulate brightness
+void checkflash (){ 
+
+  //Check for x minutes within top of hour to do flash.  Only do this is flash is enabled in set up (flash =1)
+  if (flash == 1){
+
+  flash_phase = 0;
+  if (minute < flash_mins){        //minutes = 0 at top of hour, so just check minutes is less or equal to the flash period
+    flash_phase = 1;
+  }
+    }
+
+
+  //If in flash mode then do the flash routine
+  if (flash_phase == 1){
+
+  //Check if the required time has passed to flash
+  if (millis() - LastFlashmillis >= flash_delay){
+    LastFlashmillis = millis();
+    
+    FastLED.setBrightness(howbright * sinetable[flash_working]);
+    FastLED.show();
+
+    flash_working = flash_working + 1;
+
+    //return to begining of sequence
+    if (flash_working == 26){
+      flash_working = 0;
+    }
+    } 
+  }
+  }
+
+
+//Check if reset button pressed.  D3 / GPIO0 held to ground.
+void checkreset(){
+    if (digitalRead(0) == 0){
+      delay(500);             //500ms for button bounce
+      if (digitalRead(0) == 0){
+
+  //LEDs off 
+  fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(0, 0, 0));
+    FastLED.setBrightness(howbright);
+      FastLED.show();        
+    Serial.println("** RESET **");
+    Serial.println("** RESET **");
+    Serial.println("** RESET **");
+      SPIFFS.remove("\" & HTTPfilename");
+      SPIFFS.remove("\" & Modefilename");
+      SPIFFS.remove("\" & UTCfilename");      
+      SPIFFS.format();
+      WiFi.disconnect();
+
+    delay(2500);
+      ESP.restart();
+    }
+      }
+} 
+
+
+
