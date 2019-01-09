@@ -21,8 +21,11 @@
 // 3rd digit
 // 0:  No flashing of LEDs
 // 1:  If within 5 mins of the top of the hour, the LEDs will flash
+// 
+// 4th digit
+// 1-5:  LED Brightness from 50-255
 //
-// Example:  031 = Is a sunrise/sunset (on during day/night) with the top light blue with LEDs flashing.
+// Example:  0315 = Is a sunrise/sunset (on during day/night) with the top light blue with LEDs flashing and full brightness
 //
 //
 // Variables of interest are found between the 'Things to change' comment lines
@@ -84,8 +87,8 @@
 
 //LED details
 #define NUM_LEDS_PER_STRIP 13      //Number of LEDs per strip
-#define PIN_LED D7                 //I.O pin on ESP2866 device going to LEDs
-#define COLOR_ORDER GRB            // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
+#define PIN_LED D7                //I.O pin on ESP2866 device going to LEDs
+#define COLOR_ORDER GRB           // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
 //Flash at top of hour
 int flash_mins = 1;                 //minutes to flash after the hourh  e.g 1 = 1min:  5pm - 5.01pm
@@ -108,7 +111,7 @@ const int red_night = 0;
 
 
 //Lamp brightness
-const int howbright = 255;         //0-255 LED Brightness level
+int howbright = 255;         //0-255 LED Brightness level
 
 //SPIFFS Filenames
 String HTTPfilename = "APIaddress.txt";             //Filename for storing Sunrise API HTTP address in SPIFFS
@@ -196,7 +199,7 @@ String AMPM, sunAPIresponse;
 struct CRGB leds[NUM_LEDS_PER_STRIP];         //initiate FastLED with number of LEDs
 String JSON_Extract(String);
 char mode [4];                                //Used to get input from webpage
-int SRSS_use = 0;                                 //Used to manipulate SR and SS varible if in nightlight mode
+int SRSS_Flip = 0;                                 //Used to manipulate SR and SS varible if in nightlight mode
 
 //LED Variables. Hold the value (0-255) of each primary colour
 int green = 0; 
@@ -276,13 +279,14 @@ void setup()
 //Check if time factor testing >1.  if yes, then overide the NTP/API delays to 48hrs to have clock run from jusdt millis
 if (TESTING != 0){
 
+  howbright = 255;            //0-255 LED Brightness level
   flash = 0;                  //Turn off flash if in testing mode
   NTPSecondstowait = 600;     //Wait between NTP pulls (sec)
   APISecondstowait = 600;     //Wait between Sunrise API pulls (sec) 
-  timefactor = 10;            //accellerate time by this factor
-  lightmode = 0;              //overide lightmode
+  timefactor = 1;             //accellerate time by this factor
+  lightmode = 1;              //overide lightmode
   TARDIS = 3;                 //overide top light
-  localUTC = 12;               //overide UTC
+  localUTC = 12;              //overide UTC
   sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762");
 
  Serial.print("TEST sunrise_api_request = ");
@@ -894,7 +898,7 @@ void WiFi_and_Credentials()
   
   WiFiManagerParameter custom_longitude("Longitude", "Longitude", "", 10);
     WiFiManagerParameter custom_latitude("Latitude", "Latitude", "", 10);
-  WiFiManagerParameter custom_mode("Mode", "Mode", "", 3);
+  WiFiManagerParameter custom_mode("Mode", "Mode", "", 4);
     WiFiManagerParameter custom_UTC("UTC", "UTC", "", 3);
 
     wifiManager.addParameter(&custom_longitude);
@@ -968,13 +972,16 @@ void WiFi_and_Credentials()
   char buffer[0];
   char buffer1[0];
   char buffer2[0];  
+  char buffer3[0];
   buffer[0] = mode[0];
   buffer1[0] = mode[1];
   buffer2[0] = mode[2];
+  buffer3[0] = mode[3];
 
   lightmode = atoi(buffer);
   TARDIS = atoi(buffer1);
   flash = atoi(buffer2);
+  int howbright_temp = atoi(buffer3);
 
     //Check light mode is valid.  
     if (lightmode <0 || lightmode >2){
@@ -1000,13 +1007,26 @@ void WiFi_and_Credentials()
       Serial.print("Flash mode used = ");
       Serial.println(flash);
 
+    //Check brightness is valid.  
+    if (howbright_temp <1 || howbright_temp >5){
+      Serial.println("Brightness incorrect - overriding");
+      howbright_temp = 5;
+    }
+      Serial.print("Brightness (1-5) = ");
+      Serial.println(howbright_temp);
+
+      //Entry x 5 +5 gives range of 55-255 
+      howbright = (howbright_temp * 50) + 5;
+
+      Serial.print("Brightness = ");
+      Serial.println(howbright);
 
     //Get UTC from saved file and turn into an Int and check it's between 0-24
-    char buffer3[3];
-    buffer3[0] = UTC[0];
-    buffer3[1] = UTC[1];
-    buffer3[2] = UTC[2];
-    localUTC = atoi(buffer3);
+    char buffer4[3];
+    buffer4[0] = UTC[0];
+    buffer4[1] = UTC[1];
+    buffer4[2] = UTC[2];
+    localUTC = atoi(buffer4);
 
     if (localUTC < -12 || localUTC > 12){
       Serial.println("UTC mode incorrect - overriding");
@@ -1200,6 +1220,7 @@ void DoTheLEDs()
     nightlight();
   }
 
+
   fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(red, green, blue));
 
   //Set the top light:  0=Same as other LEDs, 1=Red, 2=Green, 3=Blue, 4=White
@@ -1247,7 +1268,7 @@ void DoTheLEDs()
 void daynight()
 
 {
-  SRSS_use = 0;             //0=Normal sunrise/sunset
+  SRSS_Flip = 0;             //0=Normal sunrise/sunset, 1=Inverted sunrise/sunset colour change order (only used in nightlight mode 1 & 2)
   sunrise_sunset();
 
   //It's night and not in sunrise or sunset mode
@@ -1271,10 +1292,20 @@ void daynight()
 //nightlight mode:  Off during day, yellow during night
 void nightlight()
 {
-  SRSS_use = 1;         //0=Inverted sunrise/sunset        
+  SRSS_Flip = 1;        //1=Inverted sunrise/sunset colour change order    
   sunrise_sunset();     //calculate LEDs
 
-  //It's day and not in sunrise or sunset mode  or if it's in lightmode 1 (ignore sunrise/set changes) then force into Day or Night LED colours
+  //This section overrides the LED colours calculated from Sunrise/set phase.
+
+  //Mode 0:  This nightlight function should not be called in daynight mode (mode 0)
+  //Mode 1
+  if (SR_Phase == 0 && SS_Phase == 0 && lightmode == 1 && night == 1)       //Not in Sunrise/set phase, I'm in mode 1 and it's night time - LEDs yellow
+  {
+    blue = blue_day;
+    green = green_day;
+    red = red_day;
+  }
+
   if (SR_Phase == 0 && SS_Phase == 0 && lightmode == 1 && night == 0)      //Not in Sunrise/set phase, I'm in mode 1 and it's daytime - LEDs off
   {
     blue = 0;
@@ -1282,16 +1313,15 @@ void nightlight()
     red = 0;
   }
 
-  //It's night and not in sunrise or sunset mode  or  if it's in lightmode 1 (ignore sunrise/set changes) then fore into Day or Night LED colours
-  if (SR_Phase == 0 && SS_Phase == 0 && lightmode == 1 && night == 1)       //Not in Sunrise/set phase, I'm in mode 1 and it's night time - LEDs yellow
+  //Mode 2
+  if (lightmode == 2 && night == 0)      //Don't care about in Sunrise/set phase, I'm in mode 2 and it's daytime - LEDs off
   {
-    blue = blue_day;
-    green = green_day;
-    red = red_day;
+    blue = 0;
+    green = 0;
+    red = 0;
   }
-  
-  //It's night and lightmode 2 then force into nightlight (yellow)
-  if (lightmode = 2 && night == 1)    //I'm in mode 2, I don't care about sunrise/set phases - it's night time - LEDs yellow
+
+  if (lightmode == 2 && night == 1)      //Don't care about Sunrise/set phase, I'm in mode 2 and it's night time - LEDs yellow
   {
     blue = blue_day;
     green = green_day;
@@ -1304,26 +1334,26 @@ void nightlight()
 //Calculate sunrise/sunset LED colours
 void sunrise_sunset(){
 
-//This piece flips SR and SS phases if requested by use of SRSS_use (for nightlight).  Not ideal way to do it but it works.
+//This piece flips SR and SS phases if requested by use of SRSS_Flip (for nightlight)
     int SR_Phase_use;
     int SS_Phase_use;
 
-  if (SR_Phase == 1 && SRSS_use == 0){
+  if (SR_Phase == 1 && SRSS_Flip == 0){
     SR_Phase_use = 1;
     SS_Phase_use = 0;
   }
 
-  if (SR_Phase == 1 && SRSS_use == 1){
+  if (SR_Phase == 1 && SRSS_Flip == 1){
     SR_Phase_use = 0;
     SS_Phase_use = 1;
   }
 
-  if (SS_Phase == 1 && SRSS_use == 0){
+  if (SS_Phase == 1 && SRSS_Flip == 0){
     SR_Phase_use = 0;
     SS_Phase_use = 1;
   }
 
-  if (SS_Phase == 1 && SRSS_use == 1){
+  if (SS_Phase == 1 && SRSS_Flip == 1){
     SR_Phase_use = 1;
     SS_Phase_use = 0;
   }
