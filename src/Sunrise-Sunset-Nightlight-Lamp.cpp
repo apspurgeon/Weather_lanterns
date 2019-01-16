@@ -20,8 +20,9 @@
 //
 // 3rd digit
 // 0:  No flashing of LEDs
-// 1:  If within 5 mins of the top of the hour, the LEDs will flash
-// 
+// 1-8:  5-40seconds for flash period (5 sec blocks)
+// 9: Flash the number of the hour (12hr not 24hr clock)
+
 // 4th digit
 // 1-5:  LED Brightness from 50-255
 //
@@ -54,6 +55,10 @@
 #include <WiFiManager.h>
 #include <DNSServer.h>
 #include <FS.h>
+
+#include <SoftwareSerial.h>    //Library for serial comms to TF Sound module
+#include <DFPlayer_Mini_Mp3.h> //Library for TF Sound module
+
 //#include <BlynkSimpleEsp8266.h>
 //#define BLYNK_PRINT Serial
 
@@ -85,13 +90,16 @@
 #endif
 */
 
+//*** TESTING use only.  See testing section at end of setup
+const int printthings = 1;         //*TESTING* Flag to enable/disable printing on informations
+
 //LED details
 #define NUM_LEDS_PER_STRIP 13      //Number of LEDs per strip
 #define PIN_LED D7                //I.O pin on ESP2866 device going to LEDs
 #define COLOR_ORDER GRB           // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
 //Flash at top of hour
-int flash_mins = 1;                 //minutes to flash after the hourh  e.g 1 = 1min:  5pm - 5.01pm
+int flash_millis = 1;                 //minutes to flash after the hourh  e.g 1 = 1min:  5pm - 5.01pm
 int flash_delay = 60;               //delay between LED flashes (ms)
 
 //Max values for LEDs
@@ -111,12 +119,13 @@ const int red_night = 0;
 
 
 //Lamp brightness
-int howbright = 255;         //0-255 LED Brightness level
+int howbright = 255;                //0-255 LED Brightness level
 
 //SPIFFS Filenames
 String HTTPfilename = "APIaddress.txt";             //Filename for storing Sunrise API HTTP address in SPIFFS
 String Modefilename = "Mode.txt";                   //Filename for storing Sunrise Mode in SPIFFS (3 digits:  Mode, Top lamp, Flash)
 String UTCfilename = "UTC.txt";                     //Filename for storing Sunrise UTC in SPIFFS
+String Alarmfilename  = "alarm.txt";                     //Filename for storing Sunrise UTC in SPIFFS
 
 //Lightmode, TARDIS, Longitude/Latitude and UTC are stated here but overwritten when webpage credentials are entered (if using WiFi Manager)
 const char *NTPServerName = "0.nz.pool.ntp.org";    //local NTP server
@@ -131,17 +140,13 @@ const int LEDSecondstowait = 5;    //Wait between LED updates (sec)
 const int minswithin = 60;         //Minutes within sunrise / sunset to begin the LED colour change sequence  (60 = phase starts 30mins before sunrise/set and end 30mins after)
 const int change = 1;              //Speed of LED change in tones.  Recommend = 1
 
-
-//*** TESTING use only.  See testing section at end of setup
-const int TESTING = 0;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
-const int printthings = 1;         //*TESTING* Flag to enable/disable printing on informations
-
+int mp3vol = 25;                   //Volume for DF card player
+int mp3_selected = 1;              //Default mp3 to play ("mp3/0001.mp3" on SDcard)
+SoftwareSerial mySerial(4, 5);     // Declare pin RX & TX pins for TF Sound module.  Using D1 (GPIO 5) and D2 (GPIO 4)
 
 //*************************
 //*** Things to change  *** 
 //*************************
-
-
 
 
 //Gets SSID/PASSWORD from platformio.ini build flags.  
@@ -176,16 +181,22 @@ String clock_AMPM;                  //AM/PM from NTP Server
 int printNTP=0;                     //Set to 1 when a NTP is pulled.  The decodeepoch function used for both NTP epoch and millis epoch.  printNTP=1 in this fucnction only print new NTP results (time).
 int SecondsSinceLastNTP;            //Counts seconds since last NTP pull
 unsigned long epoch2;               //Used to calculate Millis drift/difference with NTP
-int timefactor = 1;                     //accellerate time by this factor (for testing)
+int timefactor = 1;                 //accellerate time by this factor (for testing)
 
 //LED Flash variables
 int flash_phase = 0;               //If x minutes within top of hour flash the LEDs
 int flash = 0;                     //flash = 0 (no flash)  flash = 1 (flash) set by user
 int LastFlashmillis;               //Used for tracking delay
 int flash_working = 0;             //working var for sinearray (ranges 0-31)
+int flash_start_millis; 
+int flash_phase_complete = 0;              //Flag to ensure only 1 flash cycle per 0 minutes
+int completed_flashes = 0;          //Counts the number of completed flashes if Flash=9 (flash the hour)
 
 //Create an array with 0-255 sine wave with array 0-31
 char sinetable[]= {127,152,176,198,217,233,245,252,254,252,245,233,217,198,176,152,128,103,79,57,38,22,38,57,79,103};
+
+//Array for the alarm hours to go into.  24 digits starting with midnight.  0=no alarm, 1=alarm.  e.g 0000001111111111111111100
+char alarm[25];
 
 //Sunrise - Sunset API variables
 int h_sunrise, hour_sunrise, minute_sunrise, sunrise_minutes_from_midnight, local_sunrise_minutes_from_midnight;
@@ -218,7 +229,7 @@ void DecodeEpoch (unsigned long);               //Turn Unix epoch time into hour
 void sendNTPpacket (const IPAddress &address);  //Get data
 void ConnectToAP ();                            //connect to WiFi Access point
 void WiFi_and_Credentials();                    //Get WiFi credentials if using WiFi manager option (also connects to access point)
-void checkreset();                              //Check if reset button has been pressed
+void checkreset(int);                              //Check if reset button has been pressed
 void sunrise_sunset();                          //Calculate sunrise/sunset LED colours
 
 void setup()
@@ -228,6 +239,12 @@ void setup()
   pinMode(0, INPUT);          //GPIO0 (D3) to GND to reset ESP2866
  
   FastLED.addLeds<WS2811, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS_PER_STRIP);      //Initialise the LEDs
+
+  //DF Player setup
+  mySerial.begin(9600);     //Initiate comms to TF Sound module
+  mp3_set_serial(mySerial); //set softwareSerial for DFPlayer-mini mp3 module
+  mp3_set_volume(mp3vol);   //Set default volume
+  mp3_stop();               //soft-Reset module DFPlayer.  Make sure nothing is playing on start up
 
   WiFi_and_Credentials();     //Calls WiFi function to initiate.  either uses WifiManager to get Wifi and Longitude/Latitude data (And store API URL as SPIFFS file.)  r Standard WiFi connection with build flags.
 
@@ -257,6 +274,28 @@ void setup()
     FastLED.setBrightness(howbright);
   FastLED.show();
 
+
+  //Print the alarm array
+  int alarmhour;
+  char buffer7[0];
+  for (int x=1; x <= 24; x++){
+
+  buffer7[0] = alarm[x];
+  alarmhour = atoi(buffer7);
+
+  Serial.print(x);
+    Serial.print(":");
+      Serial.print(alarmhour);
+        
+        if (x==24){
+        Serial.println();
+        Serial.println();
+        }
+        else {
+        Serial.print(", ");
+        }
+  }
+
   //Initiate time
   udp.begin(localPort);
   Serial.print("Local port: ");
@@ -275,18 +314,22 @@ void setup()
     }
   }
 
+//*** TESTING use only
+const int TESTING = 0;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
 
 //Check if time factor testing >1.  if yes, then overide the NTP/API delays to 48hrs to have clock run from jusdt millis
 if (TESTING != 0){
 
+  checkreset (0);             //Sending 1 = Clear SPIFFs  (0 = normal)
   howbright = 255;            //0-255 LED Brightness level
-  flash = 0;                  //Turn off flash if in testing mode
+  flash = 1;                  //Turn off flash if in testing mode
   NTPSecondstowait = 600;     //Wait between NTP pulls (sec)
   APISecondstowait = 600;     //Wait between Sunrise API pulls (sec) 
   timefactor = 1;             //accellerate time by this factor
   lightmode = 1;              //overide lightmode
   TARDIS = 3;                 //overide top light
-  localUTC = 12;              //overide UTC
+  localUTC = 13;              //overide UTC
+  
   sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762");
 
  Serial.print("TEST sunrise_api_request = ");
@@ -312,11 +355,12 @@ if (TESTING != 0){
 
 //Do the main execution loop
 void loop()
-
 {
   //Blynk.run();          //If Blynk being used
 
-  checkreset();           //Has the GPIO (D3) been taken low to reset WiFiManager / clears SPIFFS?
+
+
+  checkreset(0);           //Has the GPIO (D3) been taken low to reset WiFiManager / clears SPIFFS?
 
   //Get epoch from millis count.  May get over writtem by NTP pull.  timefactor is for testing to accellerate time.
   epoch = epochstart + (((millis() - startmillis) / 1000) * timefactor);
@@ -801,7 +845,8 @@ void API_Request()
 //Connect to the WiFi and manage credentials
 void WiFi_and_Credentials()
 {
-  //2 way to get WiFi.  ConnectToAP uses variables from build flags (platformio) or hard coded. 
+
+  //2 ways to get WiFi.  ConnectToAP uses variables from build flags (platformio) or hard coded. 
   //WiFiManager will check if WiFi credentials are known (in Flash memory).  If not it will stary a webserver to collect details from user
   
   //Use one of the follow lines depending on approach (build flags vs WiFiManager)
@@ -859,7 +904,7 @@ void WiFi_and_Credentials()
       g.readBytes(mode, size);
 
       g.close();  //Close file
-      Serial.printf("Read Lamp Mode  = %s\n", mode);
+      Serial.printf("Read Lamp Mode = %s\n", mode);
       Serial.println("File Closed");
   }
 
@@ -880,7 +925,28 @@ void WiFi_and_Credentials()
       h.readBytes(UTC, size);
 
       h.close();  //Close file
-      Serial.printf("Read UTC  = %s\n", UTC);
+      Serial.printf("Read UTC = %s\n", UTC);
+      Serial.println("File Closed");
+  }
+
+
+//Read Alarm file data
+  File i = SPIFFS.open("\" & Alarmfilename", "r");
+  
+  if (!i) {
+    Serial.println("file open failed");
+  }
+  else
+  {
+      Serial.println("Reading Data from alarm file:");
+      //Data from file
+
+      size_t size = i.size();
+
+      i.readBytes(alarm, size);
+
+      i.close();  //Close file
+      Serial.printf("Read alarm = %s\n", alarm);
       Serial.println("File Closed");
   }
 
@@ -895,16 +961,18 @@ void WiFi_and_Credentials()
 
   //If file doesn't exist, get details from the user with wifimanager website
   //create http address and store in APIaddresst.txt file
-  
+
   WiFiManagerParameter custom_longitude("Longitude", "Longitude", "", 10);
     WiFiManagerParameter custom_latitude("Latitude", "Latitude", "", 10);
   WiFiManagerParameter custom_mode("Mode", "Mode", "", 4);
     WiFiManagerParameter custom_UTC("UTC", "UTC", "", 3);
+  WiFiManagerParameter custom_alarm("Alarm", "Alarm", "", 25);
 
     wifiManager.addParameter(&custom_longitude);
   wifiManager.addParameter(&custom_latitude);
     wifiManager.addParameter(&custom_mode);
   wifiManager.addParameter(&custom_UTC);
+    wifiManager.addParameter(&custom_alarm);
 
   //WiFiManager will read stored WiFi Data, if it can't connect it will create a website to get new credentials
   wifiManager.autoConnect("WiFi_Lamp");
@@ -915,6 +983,7 @@ void WiFi_and_Credentials()
   sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=%s&lng=%s",  + custom_latitude.getValue(), custom_longitude.getValue());
   sprintf (mode, "%s", + custom_mode.getValue());
   sprintf (UTC, "%s", + custom_UTC.getValue());
+  sprintf (alarm, "%s", + custom_alarm.getValue());
 
   //Create New HTTP File And Write Data to It
   //w=Write Open file for writing
@@ -964,7 +1033,24 @@ void WiFi_and_Credentials()
         Serial.println("New file written");
       h.close();  //Close file
     }  
+
+  //Create New alarm File And Write Data to It
+  //w=Write Open file for writing
+  File i = SPIFFS.open("\" & Alarmfilename", "w");
+  
+  if (!i) {
+    Serial.println("alarm file open failed");
+    }
+  else
+    {
+      //Write data to file
+      Serial.println("Writing Data to alarm File");
+      i.print(alarm);
+        Serial.println("New file written");
+      i.close();  //Close file
+    }
   }
+
 
   //Check File content or web entered details and correct if needed
   //Get light mode from saved file and turn into an Int and check it's either 0, 1 or 2
@@ -1000,7 +1086,7 @@ void WiFi_and_Credentials()
       Serial.println(TARDIS);
 
     //Check flash mode is valid.  
-    if (flash <0 || flash >1){
+    if (flash <0 || flash >9){
       Serial.println("Flash mode incorrect - overriding");
       flash = 0;
     }
@@ -1028,7 +1114,7 @@ void WiFi_and_Credentials()
     buffer4[2] = UTC[2];
     localUTC = atoi(buffer4);
 
-    if (localUTC < -12 || localUTC > 12){
+    if (localUTC < -13 || localUTC > 13){
       Serial.println("UTC mode incorrect - overriding");
       localUTC = 12;
     }
@@ -1428,15 +1514,123 @@ Serial.println();
 //Check if flash is required and manipulate brightness
 void checkflash (){ 
 
-  //Check for x minutes within top of hour to do flash.  Only do this is flash is enabled in set up (flash =1)
-  if (flash == 1){
+  //minute = 0;
 
-  flash_phase = 0;
-  if (minute < flash_mins){        //minutes = 0 at top of hour, so just check minutes is less or equal to the flash period
+  //if flash >= 1 (enabled) and minutes = 0 (top of hour) and LEDs are on (e.g not off during day) then set flash_phase = 1
+  if (minute == 0 && flash >= 1 && flash_phase_complete == 0 && (red + blue + green) >0 ){        
     flash_phase = 1;
-  }
+
+    //if flash_start_millis = 0 then it's the first time, set start millis
+    if (flash_start_millis == 0){
+      flash_start_millis = millis();    
+
+    
+    Serial.println("Start flash phase...");
+    
+    int local_hour = local_clock_minutes_from_midnight / 60;      //Turn mines into the hour, needed for alarm check
+    int alarmhour;
+    int mp3vol_temp;
+    char buffer9[0];      //Buffer from Alarm hour
+    char buffer8[0];      //Buffer for MP3 Volume
+
+    //Get volume
+    buffer8[0] = alarm[0];
+    mp3vol_temp= atoi(buffer8);
+
+    if (mp3vol_temp <0 || mp3vol_temp > 9){
+      mp3vol = 25;                    //default to 25 in error state
+    }
+    else {
+      mp3vol = mp3vol_temp * 3.3;     //30 is max volume, 9 x 3.3 = 29.7
     }
 
+    //Get Alarm on/off for hour
+    buffer9[0] = alarm[local_hour];
+    alarmhour = atoi(buffer9);
+
+    //Check for alarm
+      Serial.print("Local hour = ");
+      Serial.print(local_hour);
+      Serial.print(",  Alarm array for hour = ");
+      Serial.print(alarmhour);
+
+    if (alarmhour > 0){
+      Serial.print(",  Alarm ON, Volume = ");   //Alarm is on, the alarm array didn't have 0 for this hour
+      Serial.print(mp3vol);
+      Serial.print(", ");
+
+      if (flash ==9){
+        Serial.println(" Flashing hours");
+      }
+      else {
+        Serial.println(" Flashing defined seconds");
+      }
+      Serial.print("Completed flashes: ");
+        mp3_set_volume(mp3vol);         //Set the mp3 volume
+        mp3_play(mp3_selected);         //Play selected mp3 in folder mp3
+    }
+    else {
+      Serial.print(",  No Alarm, ");    //The alarm array had 0, no alarm for this hour
+      if (flash ==9){
+        Serial.println(" Flashing hours");
+      }
+      else {
+        Serial.println(" Flashing defined seconds");
+      }
+      Serial.print("Completed flashes: ");
+    }
+      }
+        }
+  
+  //Check for flash_start_miillis + flash_end_millis, if exceeded then flash_phase = 0 (off)
+  //flash ranges from 1-6, x10,000 for 10-60 seconds or if flash = 9  then flash the hour.
+  if (flash_phase == 1 && flash <=8 && millis() > (flash_start_millis + (flash * 5000))) { 
+
+    flash_phase = 0;          //turn off flash_phase
+    flash_start_millis = 0;   //reset start_millis
+    flash_phase_complete = 1;        //Flag to confirm a completed a flash cycle
+    mp3_stop();               //Stop the sounds (if they are playing)
+
+    Serial.println("End flash phase...");
+    Serial.println();
+    Serial.println("****************");
+  }
+
+
+//Check for flash_start_miillis + flash_end_millis, if exceeded then flash_phase = 0 (off)
+//flash ranges from 1-6, x10,000 for 10-60 seconds or if flash = 9  then flash the hour.
+
+  //Convert minutes from midnight to hours, and make 1-12
+  int local_hour2 = local_clock_minutes_from_midnight / 60;
+    if (local_hour2 > 12){
+      local_hour2 = local_hour2 - 12;
+    }
+
+  //if 0 (midnight, then make 12)  
+    if (local_hour2 == 0) {
+      local_hour2 = 12;
+    }
+
+  if (flash_phase == 1 && flash == 9 && completed_flashes == local_hour2) {     //Flash==9 means flash the number of hours
+
+    flash_phase = 0;                //turn off flash_phase
+    flash_start_millis = 0;         //reset start_millis
+    flash_phase_complete = 1;      //Flag to confirm a completed a flash cycle
+    mp3_stop();                    //Stop the sounds (if they are playing)
+
+    Serial.println();
+    Serial.println("End flash phase...");
+    Serial.println();
+    Serial.println("****************");
+
+  }
+
+
+  //Use a flag flash_phase_complete which is only set back to 0 when in minute 2.  This stops more than 1 flash cycle during a minute=0 scenario
+  if (minute >= 2 ){        
+    flash_phase_complete = 0;
+    completed_flashes = 0;
+    }
 
   //If in flash mode then do the flash routine
   if (flash_phase == 1){
@@ -1449,10 +1643,12 @@ void checkflash (){
     FastLED.show();
 
     flash_working = flash_working + 1;
-
     //return to begining of sequence
     if (flash_working == 26){
       flash_working = 0;
+      completed_flashes = completed_flashes + 1;
+      Serial.print(completed_flashes);
+      Serial.print(", ");
     }
     } 
   }
@@ -1460,29 +1656,29 @@ void checkflash (){
 
 
 //Check if reset button pressed.  D3 / GPIO0 held to ground.
-void checkreset(){
-    if (digitalRead(0) == 0){
+void checkreset(int ClearSPIFFS){
+    if (digitalRead(0) == 0 || ClearSPIFFS ==1){
       delay(500);             //500ms for button bounce
-      if (digitalRead(0) == 0){
+      if (digitalRead(0) == 0 || ClearSPIFFS ==1){
 
   //LEDs off 
   fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(0, 0, 0));
     FastLED.setBrightness(howbright);
-      FastLED.show();        
-    Serial.println("** RESET **");
-    Serial.println("** RESET **");
-    Serial.println("** RESET **");
+      FastLED.show();    
+
+      Serial.println("** RESET **");
+      Serial.println("** RESET **");
+      Serial.println("** RESET **");
+      
       SPIFFS.remove("\" & HTTPfilename");
       SPIFFS.remove("\" & Modefilename");
       SPIFFS.remove("\" & UTCfilename");      
+      SPIFFS.remove("\" & Alarmfilename");            
       SPIFFS.format();
       WiFi.disconnect();
 
-    delay(2500);
+      delay(2500);
       ESP.restart();
-    }
       }
+    }
 } 
-
-
-
