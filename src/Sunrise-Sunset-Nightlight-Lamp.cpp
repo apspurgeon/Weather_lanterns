@@ -133,8 +133,9 @@ int localUTC = 12;                                  //Country UTC offset, needed
 int lightmode = 0;                                  //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (but off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
 int TARDIS = 1;                                     //Used for my TARDIS lamp.  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
 
-int NTPSecondstowait = 600;  //Wait between NTP pulls (sec)
+int NTPSecondstowait = 300;  //Wait between NTP pulls (sec)
 int APISecondstowait = 3600; //Wait between Sunrise API pulls (sec)
+int SecondsSinceLastAPI = 0;
 
 const int LEDSecondstowait = 5;    //Wait between LED updates (sec)
 const int minswithin = 60;         //Minutes within sunrise / sunset to begin the LED colour change sequence  (60 = phase starts 30mins before sunrise/set and end 30mins after)
@@ -173,7 +174,7 @@ int vera = 0, night = 0;                                                        
 const int NTP_PACKET_SIZE = 48;                                                                 // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[NTP_PACKET_SIZE];                                                             //buffer to hold incoming and outgoing packets
 unsigned long epoch = 0, lastepoch = 0, LastNTP = 0, LastAPI, LastLED, epochstart, startmillis; //Unix time in seconds
-int lastepochcount = 0, totalfailepoch = 0;
+int lastepochcount = 1, totalfailepoch = 0;
 int hour, minute, second;               //UTC time
 int clock_minutes_from_midnight, local_clock_minutes_from_midnight; //Minutes from midnight
 int NTPSeconds_to_wait = 1;         //Initial wait time between NTP/Sunrise pulls (1 sec)
@@ -236,11 +237,11 @@ void setup()
 {
   Serial.begin(9600);
 
-  pinMode(0, INPUT);          //GPIO0 (D3) to GND to reset ESP2866
+  pinMode(0, INPUT);        //GPIO0 (D3) to GND to reset ESP2866 Credentials
  
   FastLED.addLeds<WS2811, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS_PER_STRIP);      //Initialise the LEDs
 
-  //DF Player setup
+  //DF Sound player setup
   mySerial.begin(9600);     //Initiate comms to TF Sound module
   mp3_set_serial(mySerial); //set softwareSerial for DFPlayer-mini mp3 module
   mp3_set_volume(mp3vol);   //Set default volume
@@ -251,7 +252,7 @@ void setup()
   //Blynk setup (if being used).
   //Blynk.begin(auth, ssid, pass);
 
-  //Test the LEDs
+  //Test the LEDs in RGB order
   fill_solid(leds, NUM_LEDS_PER_STRIP, CRGB(255, 0, 0));
     FastLED.setBrightness(howbright);
   FastLED.show();
@@ -275,7 +276,7 @@ void setup()
   FastLED.show();
 
 
-  //Print the alarm array
+  //Print the alarm array, which Hours are on/off for Alarm sound.
   int alarmhour;
   char buffer7[0];
   for (int x=1; x <= 24; x++){
@@ -284,9 +285,14 @@ void setup()
   alarmhour = atoi(buffer7);
 
   Serial.print(x);
-    Serial.print(":");
-      Serial.print(alarmhour);
+  Serial.print(":");
+  Serial.print(alarmhour);
         
+  if (alarmhour > 1){
+    Serial.print(" correcting to 0 ");
+    alarm[x] = 0;
+    }
+
         if (x==24){
         Serial.println();
         Serial.println();
@@ -313,6 +319,7 @@ void setup()
       Request_Time(); //Get the time
     }
   }
+
 
 //*** TESTING use only
 const int TESTING = 0;             //*TESTING* Normal condition =0.    Force a UTC time (entered as minutes from midnight) for testing purposes  (making sure LEDs do as expected)
@@ -358,14 +365,11 @@ void loop()
 {
   //Blynk.run();          //If Blynk being used
 
-
-
   checkreset(0);           //Has the GPIO (D3) been taken low to reset WiFiManager / clears SPIFFS?
 
   //Get epoch from millis count.  May get over writtem by NTP pull.  timefactor is for testing to accellerate time.
   epoch = epochstart + (((millis() - startmillis) / 1000) * timefactor);
-
-  printNTP=0;
+  printNTP = 0;     //Flag to state time was not from an NTP request
 
   //Check if it's time to display to get NTP time by checking Millis past against the wait period defined.
   //NTP pull is done periodically, counting Millis by internal count is very accurate so NTP not constantly needed.
@@ -384,10 +388,10 @@ void loop()
     Serial.println(epoch);
     Serial.println("");
 
-    Request_Time();         //Get the time
+    Request_Time();         //Get the timedata
     printNTP=1;             //1 is a flag to serialprint the time (only used for NTP pull not for millis updates)
     delay(2000);
-    while (!Check_Time())
+    while (!Check_Time())   //Converts to Epoch, returns a False if not data Rxd
     { //If no time recieved then do this
       delay(2000);
       TimeCheckLoop++;
@@ -406,15 +410,15 @@ void loop()
     Serial.println();
 
     yield();
-    NTPSeconds_to_wait = NTPSecondstowait;        //Over write the initial wait period (1 sec) to the ongoing period (120 sec)
+    NTPSeconds_to_wait = NTPSecondstowait;        //Over write the initial wait period (1 sec) to the ongoing period (e.g 600 sec)
   }
   }
 
-  //Epoch has been updated using NTP pull or counting Millis.  Now turn this into clock_minutes_from_midnight
-  DecodeEpoch(epoch);     //Turn epoch time into Hours Minutes Seconds
+  //Epoch has been updated Reqyest time and Check time functions.  Now turn this into UTC clock_minutes_from_midnight
+  DecodeEpoch(epoch);       //Turn epoch time into Hours Minutes Seconds
 
   //Check if it's time to get Sunrise/Set times
-  int SecondsSinceLastAPI = (millis() - LastAPI) / 1000;      //How many seconds since Last API pull
+  SecondsSinceLastAPI = (millis() - LastAPI) / 1000;      //How many seconds since Last API pull
   if (SecondsSinceLastAPI > APISecondstowait)
   {
     LastAPI = millis();
@@ -443,403 +447,6 @@ void loop()
 
 
 
-
-
-
-//Update the time
-void DecodeEpoch(unsigned long currentTime)
-{
-  // print the raw epoch time from NTP server
-   if (printNTP ==1 && printthings ==1){
-  Serial.print("The epoch UTC time is ");
-  Serial.print(epoch);
-  Serial.println();
-
-  // print the hour, minute and second:
-  Serial.print("The UTC time is ");      // UTC is the time at Greenwich Meridian (GMT)
-  Serial.print((epoch % 86400L) / 3600); // print the hour (86400 equals secs per day)
-  Serial.print(':');
-  
-  if (((epoch % 3600) / 60) < 10)
-  {
-    // In the first 10 minutes of each hour, we'll want a leading '0'
-    Serial.print('0');
-  }
-
-  Serial.print((epoch % 3600) / 60); // print the minute (3600 equals secs per minute)
-  Serial.print(':');
-
-  if ((epoch % 60) < 10)
-  {
-    // In the first 10 seconds of each minute, we'll want a leading '0'
-    Serial.print('0');
-  }
-
-  Serial.println(epoch % 60); // print the second
-   }
-  hour = (currentTime % 86400L) / 3600;
-
-  minute = (currentTime % 3600) / 60;
-  second = currentTime % 60;
-
-  clock_AMPM = "AM";
-
-  if (hour > 12)
-  {
-    hour = hour - 12;
-    clock_AMPM = "PM";
-  }
-
-  if (printNTP ==1 && printthings ==1){
-  Serial.print("UTC Hour: ");
-  Serial.print(hour);
-  Serial.print(",   Minute: ");
-  Serial.print(minute);
-  Serial.print(",   Second: ");
-  Serial.println(second);
-  Serial.println();
-  }
-  
-
-  //Work out Hours/min into minutes from midnight to Calculate if it's AM or PM time
-  working_hourtomin = hour;
-
-  //PM add 12
-  if (clock_AMPM == "PM")
-  {
-    working_hourtomin = hour + 12;
-  }
-
-  //Midnight = 0
-  if (clock_AMPM == "AM" && hour == 12)
-  {
-    working_hourtomin = 0;
-  }
-
-  //Noon = 12
-  if (clock_AMPM == "PM" && hour == 12)
-  {
-    working_hourtomin = 12;
-  }
-
-  clock_minutes_from_midnight = ((working_hourtomin * 60) + minute);
-
-  //Get local minutes for day/night calc
-  local_clock_minutes_from_midnight = clock_minutes_from_midnight+ (localUTC * 60);
-
-  //If local_minutes is negative (e.g Negative UTC)
-  if (local_clock_minutes_from_midnight > 1440)
-  {
-    local_clock_minutes_from_midnight = local_clock_minutes_from_midnight - 1440;
-  }
-
-    //If local_minutes is negative (e.g Negative UTC)
-  if (local_clock_minutes_from_midnight <0 )
-  {
-    local_clock_minutes_from_midnight = local_clock_minutes_from_midnight + 1440;
-  }
-
-
-  if (printNTP ==1 && printthings ==1){
-  Serial.print("UTC Clock - Mins from midnight = ");
-  Serial.print(clock_minutes_from_midnight);
-  Serial.print(",   Local - Clock - Mins from midnight = ");
-  Serial.println(local_clock_minutes_from_midnight);
-  Serial.println();
-  Serial.println("****************");
-  Serial.println();
-  }
-  
-  //Work out Hours/min into minutes from midnight
-  working_hourtomin = hour_sunrise;
-
-  //PM add 12
-  if (strcmp(SR_AMPM, "P") == 0)
-  {
-    working_hourtomin = hour_sunrise + 12;
-  }
-
-  //Midnight = 0
-  if (strcmp(SR_AMPM, "A") == 0 && hour_sunrise == 12)
-  {
-    working_hourtomin = 0;
-  }
-
-  //Noon = 12
-  if (strcmp(SR_AMPM, "P") == 0 && hour_sunrise == 12)
-  {
-    working_hourtomin = 12;
-  }
-
-  
-
-  //UTC number of minutes from midnight until sunrise
-  sunrise_minutes_from_midnight = ((working_hourtomin * 60) + minute_sunrise);   
-
-  //Convert UTC sunrise_minutes_from_midnight into local_sunrise_minutes_from_midnight with UTC
-  local_sunrise_minutes_from_midnight = sunrise_minutes_from_midnight + (localUTC * 60);
-
-  //If local_minutes is greater than 1 day (e.g large postive UTC)
-  if (local_sunrise_minutes_from_midnight > 1440)
-  {
-    local_sunrise_minutes_from_midnight = local_sunrise_minutes_from_midnight - 1440;
-  }
-
-  //If local_minutes is negative (e.g Negative UTC)
-  if (local_sunrise_minutes_from_midnight <0 )
-  {
-    local_sunrise_minutes_from_midnight = local_sunrise_minutes_from_midnight + 1440;
-  }
-
-  //Work out Hours/min into minutes from midnight
-  working_hourtomin = hour_sunset;
-
-  //PM add 12
-  if (strcmp(SS_AMPM, "P") == 0)
-  {
-    working_hourtomin = hour_sunset + 12;
-  }
-
-  //Midnight = 0
-  if (strcmp(SS_AMPM, "A") == 0 && hour_sunset == 12)
-  {
-    working_hourtomin = 0;
-  }
-
-  //Noon = 12
-  if (strcmp(SS_AMPM, "P") == 0 && hour_sunset == 12)
-  {
-    working_hourtomin = 12;  Serial.println();
-  }
-
- 
-  sunset_minutes_from_midnight = ((working_hourtomin * 60) + minute_sunset);
-
-  //Convert UTC sunrise_minutes_from_midnight into local_sunrise_minutes_from_midnight with UTC
-  local_sunset_minutes_from_midnight = sunset_minutes_from_midnight + (localUTC * 60);
-
-  //If local_minutes is greater than 1 day (e.g large postive UTC)
-  if (local_sunset_minutes_from_midnight > 1440)
-  {
-    local_sunset_minutes_from_midnight = local_sunset_minutes_from_midnight - 1440;
-  }
-  
-  //If local_minutes is negative (e.g Negative UTC)
-  if (local_sunset_minutes_from_midnight <0 )
-  {
-    local_sunset_minutes_from_midnight = local_sunset_minutes_from_midnight + 1440;
-  }
-
-  if (printthings ==1 && printNTP == 1){
-  Serial.print("UTC Hour: ");
-  Serial.print(hour);
-  Serial.print(",   Minute: ");
-  Serial.print(minute);
-  Serial.print(",   Second: ");
-  Serial.println(second);
-  Serial.println();
-
-  Serial.print("local_sunrise_minutes_from_midnight = ");
-  Serial.print(local_sunrise_minutes_from_midnight);
-  Serial.print(",   local_sunset_minutes_from_midnight = ");
-  Serial.println(local_sunset_minutes_from_midnight);
-  Serial.print("sunrise_minutes_from_midnight = ");
-  Serial.print(sunrise_minutes_from_midnight);
-  Serial.print(",   sunset_minutes_from_midnight = ");
-  Serial.println(sunset_minutes_from_midnight);
-  Serial.println();
-  }
-}
-
-
-
-//Get time from NTP Server
-void Request_Time()
-{
-  epoch2=epoch;             //Used to check old (using millis) epoch against a new epoch from NTP to show drift.
-  Serial.println("Getting Time");
-  WiFi.hostByName(NTPServerName, timeServer);
-  sendNTPpacket(timeServer); // send an NTP packet to a time server
-}
-
-bool Check_Time() //This returns a bool value based on UDP time being received and placed in epoch variable
-{
-  int cb = udp.parsePacket();
-  if (!cb)
-  {
-    Serial.println("no packet yet");
-    return false;
-  }
-  else
-  {
-    Serial.print("packet received, length=");
-    Serial.println(cb);
-    Serial.println();
-    Serial.println("****************");
-    Serial.println();
-
-    // We've received a packet, read the data from it
-    udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
-
-    //the timestamp starts at byte 40 of the received packet and is four bytes,
-    // or two words, long. First, extract the two words:
-
-    unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
-    unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
-    // combine the four bytes (two words) into a long integer
-    // this is NTP time (seconds since Jan 1 1900):
-    unsigned long secsSince1900 = highWord << 16 | lowWord;
-    //Serial.print("Seconds since Jan 1 1900 = " );
-    // Serial.println(secsSince1900);
-
-    // now convert NTP time into everyday time:
-    //Serial.print("Unix time = ");
-    // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
-    const unsigned long seventyYears = 2208988800UL;
-    lastepoch = epoch; //Used to compare last known epoch time with new NTP
-
-    // subtract seventy years:
-    epoch = secsSince1900 - seventyYears;
-
-    //Check if there are lost packets (epoch is wildly different from last time).  If yes, use last epoch
-    //if first epoch time is wrong this is constantly fail.
-
-    Serial.print("epoch:  ");
-    Serial.println(epoch);
-
-    if (abs(epoch - lastepoch) > 3600 && lastepoch != 0) //Check if the old and new epoch times are more than 60s x 60 (1hr) and lastepoch isn't 0 (not had a time before)
-    {
-      Serial.println("epoch vs oldepoch > 1hr");
-      if (lastepochcount <= 3)
-      {
-        epoch = lastepoch; //If more than 1hr difference, and old/new different less than 'N' times
-        lastepochcount = lastepochcount + 1;
-        totalfailepoch = totalfailepoch + 1;
-
-        Serial.println("Using oldepoch from millis");
-        Serial.print("previously failed = ");
-        Serial.println(totalfailepoch);
-        Serial.println();
-      }
-      else
-      {
-        lastepochcount = 0; //It's different more than 'N' times, inital NTP must have been wrong.  Stay with last recieved epoch.
-        lastepoch = epoch;
-        Serial.println("Using new epoch even though different.  It's been different too many times - resetting");
-        Serial.print("previously failed = ");
-        Serial.print(totalfailepoch);
-        Serial.println("Making internal clock = new NTP time");
-        Serial.println();
-
-        epochstart = epoch;     //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
-        startmillis = millis(); //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
-      }
-    }
-    else
-    {
-      Serial.print("epoch is good");
-      Serial.print(",   previously failed = ");
-      Serial.println(totalfailepoch);
-      Serial.println("Making internal clock = new NTP time");
-      Serial.println();
-
-      lastepochcount = 0;     //With a good epoch reset the bad epoch counter to zero
-      lastepoch = epoch;      //With a good epoch make lastepoch the new good one for next loop
-      epochstart = epoch;     //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
-      startmillis = millis(); //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
-    }
-
-      Serial.print("new NTP epoch = ");
-      Serial.print(epoch);
-      Serial.print(",   Millis epoch = ");
-      Serial.print(epoch2);
-      Serial.print(",   Difference (ms) = ");
-      Serial.println(abs(epoch - epoch2));
-
-    LastNTP = millis(); //Set the last millis time the NTP time was attempted
-    RequestedTime = 0;
-    TimeCheckLoop = 0;
-    return true;
-  }
-}
-
-
-// send an NTP request to the time server at the given address
-void sendNTPpacket(const IPAddress &address) 
-{
-  Serial.println("sending NTP packet");
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011; // LI, Version, Mode
-  packetBuffer[1] = 0;          // Stratum, or type of clock
-  packetBuffer[2] = 6;          // Polling Interval
-  packetBuffer[3] = 0xEC;       // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12] = 49;
-  packetBuffer[13] = 0x4E;
-  packetBuffer[14] = 49;
-  packetBuffer[15] = 52;
-
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
-  udp.beginPacket(address, 123); //NTP requests are to port 123
-  udp.write(packetBuffer, NTP_PACKET_SIZE);
-  udp.endPacket();
-}
-
-
-// Get data from Sunrise API HTTP address
-void API_Request()
-
-{
-  HTTPClient http;
-  char buff[400];
-
-  Serial.print("Getting Sunrise API data with: ");
-  Serial.println(sunrise_api_request);
-  http.begin(sunrise_api_request);
-
-  int httpCode = http.GET(); //Serial.print("[HTTP] GET...\n");  Start connection and send HTTP header
-  if (httpCode > 0)          // httpCode will be negative on error
-  {
-    // HTTP header has been send and Server response header has been handled
-    //Serial.printf("[HTTP] GET... code: %d\n", httpCode);
-    if (httpCode == HTTP_CODE_OK)
-    {
-      String payload = http.getString();
-      payload.toCharArray(buff, 400);
-      sunAPIresponse = payload; //Sunresponse is used by JSON function
-      Serial.println("API response received");
-      Serial.println();
-
-      sscanf(JSON_Extract("sunrise").c_str(), "%d:%d:%*d %c", &hour_sunrise, &minute_sunrise, SR_AMPM); //Get JSON for sunrise (string) convert to const char and search for hours:minutes
-      sscanf(JSON_Extract("sunset").c_str(), "%d:%d:%*d %c", &hour_sunset, &minute_sunset, SS_AMPM);    //Get JSON for sunset (string) convert to const char and search for hours:minutes
-
-      Serial.print("hour_sunrise = ");
-      Serial.print(hour_sunrise);
-      Serial.print(",   minute_sunrise = ");
-      Serial.print(minute_sunrise);
-      Serial.print(",   SR AMPM = ");
-      Serial.println(SR_AMPM);
-      Serial.print("hour_sunset = ");
-      Serial.print(hour_sunset);
-      Serial.print(",   minute_sunset = ");
-      Serial.print(minute_sunset);
-      Serial.print(",   SS AMPM = ");
-      Serial.println(SS_AMPM);
-      Serial.println();
-      Serial.println("****************");
-      Serial.println();      
-    }
-  }
-  else
-  {
-    Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
-  }
-  http.end();
-}
 
 
 //Connect to the WiFi and manage credentials
@@ -1116,7 +723,7 @@ void WiFi_and_Credentials()
 
     if (localUTC < -13 || localUTC > 13){
       Serial.println("UTC mode incorrect - overriding");
-      localUTC = 12;
+      localUTC = 12;    //Default to NZ (winter)
     }
       Serial.print("UTC used = ");
       Serial.println(localUTC);
@@ -1190,18 +797,18 @@ void DoTheLEDs()
   Serial.print(",   Minute: ");
   Serial.print(minute);
   Serial.print(",   Second: ");
-  Serial.println(second);
+  Serial.print(second);
+  Serial.print(",   clock_AMPM: ");
+  Serial.println(clock_AMPM);
   Serial.println();
  
   //Check for sunrise.  clock_minutes_from_midnight is time in minutes from midnight.  Sunrise/set minutes and clock are both UTC
   //Only compare UTC with UTC as local time (using UTC offset can change with daylight savings).  Local only for figuring out if it's night or day
 
-
   //Corrected Sunrise/Set and time variables
   int sunrise_minutes_from_midnight_corrected = sunrise_minutes_from_midnight;
   int sunset_minutes_from_midnight_corrected = sunset_minutes_from_midnight;
   int clock_minutes_from_midnight_corrected = clock_minutes_from_midnight;
-
 
   //e.g SR 0020 means 30mins before and 30 after would be 1430:0050.  Different timelines are difficult to compare.  Make 0020 = 1460 (1440 + 0020) then 30mins before/after:  1430:1490
   //Need to correct time 
@@ -1267,7 +874,7 @@ void DoTheLEDs()
     
   Serial.print("clock_minutes_from_midnight (UTC) = ");
   Serial.print(clock_minutes_from_midnight);
-  Serial.print(",   clock_minutes_from_midnight (local) = ");
+  Serial.print(",   local_clock_minutes_from_midnight = ");
   Serial.println(local_clock_minutes_from_midnight);
   Serial.print("sunrise minutes_from_midnight (UTC) = ");
   Serial.print(sunrise_minutes_from_midnight);
@@ -1278,6 +885,8 @@ void DoTheLEDs()
   Serial.print(",   Startmillis: ");
   Serial.print(startmillis);    
   Serial.print(",   epochstart: ");
+  Serial.print("SecondsSinceLastAPI: ");
+  Serial.print(SecondsSinceLastAPI);
   Serial.println(epochstart);  
   Serial.println();  
   Serial.print("flash_phase = ");
@@ -1514,8 +1123,6 @@ Serial.println();
 //Check if flash is required and manipulate brightness
 void checkflash (){ 
 
-  //minute = 0;
-
   //if flash >= 1 (enabled) and minutes = 0 (top of hour) and LEDs are on (e.g not off during day) then set flash_phase = 1
   if (minute == 0 && flash >= 1 && flash_phase_complete == 0 && (red + blue + green) >0 ){        
     flash_phase = 1;
@@ -1549,7 +1156,9 @@ void checkflash (){
     alarmhour = atoi(buffer9);
 
     //Check for alarm
-      Serial.print("Local hour = ");
+      Serial.print("local clock_minutes from midnight = ");
+      Serial.print(local_clock_minutes_from_midnight);
+      Serial.print(",  Local hour = ");
       Serial.print(local_hour);
       Serial.print(",  Alarm array for hour = ");
       Serial.print(alarmhour);
@@ -1601,6 +1210,7 @@ void checkflash (){
 //flash ranges from 1-6, x10,000 for 10-60 seconds or if flash = 9  then flash the hour.
 
   //Convert minutes from midnight to hours, and make 1-12
+  //Local_hour2 is used for the number of flashes, e.g 13:00  > 1:00
   int local_hour2 = local_clock_minutes_from_midnight / 60;
     if (local_hour2 > 12){
       local_hour2 = local_hour2 - 12;
@@ -1682,3 +1292,414 @@ void checkreset(int ClearSPIFFS){
       }
     }
 } 
+
+
+
+// Get data from Sunrise API HTTP address
+void API_Request()
+
+{
+  HTTPClient http;
+  char buff[400];
+
+  Serial.print("Getting Sunrise API data with: ");
+  Serial.println(sunrise_api_request);
+  http.begin(sunrise_api_request);
+
+  int httpCode = http.GET(); //Serial.print("[HTTP] GET...\n");  Start connection and send HTTP header
+  if (httpCode > 0)          // httpCode will be negative on error
+  {
+    // HTTP header has been send and Server response header has been handled
+    //Serial.printf("[HTTP] GET... code: %d\n", httpCode);
+    if (httpCode == HTTP_CODE_OK)
+    {
+      String payload = http.getString();
+      payload.toCharArray(buff, 400);
+      sunAPIresponse = payload; //Sunresponse is used by JSON function
+      Serial.println("API response received");
+      Serial.println();
+
+      sscanf(JSON_Extract("sunrise").c_str(), "%d:%d:%*d %c", &hour_sunrise, &minute_sunrise, SR_AMPM); //Get JSON for sunrise (string) convert to const char and search for hours:minutes
+      sscanf(JSON_Extract("sunset").c_str(), "%d:%d:%*d %c", &hour_sunset, &minute_sunset, SS_AMPM);    //Get JSON for sunset (string) convert to const char and search for hours:minutes
+
+      Serial.print("hour_sunrise = ");
+      Serial.print(hour_sunrise);
+      Serial.print(",   minute_sunrise = ");
+      Serial.print(minute_sunrise);
+      Serial.print(",   SR AMPM = ");
+      Serial.println(SR_AMPM);
+      Serial.print("hour_sunset = ");
+      Serial.print(hour_sunset);
+      Serial.print(",   minute_sunset = ");
+      Serial.print(minute_sunset);
+      Serial.print(",   SS AMPM = ");
+      Serial.println(SS_AMPM);
+      Serial.println();
+      Serial.println("****************");
+      Serial.println();      
+    }
+  }
+  else
+  {
+    Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+  }
+  http.end();
+}
+
+
+
+//***********************************************************
+//          All the time functions below here
+//***********************************************************
+
+//Get time from NTP Server
+void Request_Time()
+{
+  epoch2=epoch;             //Used to check old (using millis) epoch against a new epoch from NTP to show drift.
+  Serial.println("Getting Time");
+  WiFi.hostByName(NTPServerName, timeServer);
+  sendNTPpacket(timeServer);                  // send an NTP packet to a time server
+}
+
+bool Check_Time() //This returns a bool value based on UDP time being received and placed in epoch variable
+{
+  int cb = udp.parsePacket();
+  if (!cb)
+  {
+    Serial.println("no packet yet");
+    return false;
+  }
+  else
+  {
+    Serial.print("packet received, length=");
+    Serial.println(cb);
+    Serial.println();
+    Serial.println("****************");
+    Serial.println();
+
+    // We've received a packet, read the data from it
+    udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
+
+    //the timestamp starts at byte 40 of the received packet and is four bytes,
+    // or two words, long. First, extract the two words:
+
+    unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
+    unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
+    // combine the four bytes (two words) into a long integer
+    // this is NTP time (seconds since Jan 1 1900):
+    unsigned long secsSince1900 = highWord << 16 | lowWord;
+    //Serial.print("Seconds since Jan 1 1900 = " );
+    // Serial.println(secsSince1900);
+
+    // now convert NTP time into everyday time:
+    //Serial.print("Unix time = ");
+    // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
+    const unsigned long seventyYears = 2208988800UL;
+    lastepoch = epoch; //Used to compare last known epoch time with new NTP
+
+    // subtract seventy years:
+    epoch = secsSince1900 - seventyYears;
+
+    //Check if there are lost packets (epoch is wildly different from last time).  If yes, use last epoch
+    //if first epoch time is wrong this is constantly fail.
+
+    Serial.print("secsSince1900: ");
+    Serial.print(secsSince1900);
+    Serial.print(",  epoch: ");
+    Serial.println(epoch);
+
+    if (abs(epoch - lastepoch) > 3600 && lastepoch != 0) //Check if the old and new epoch times are more than 60s x 60 (1hr) and lastepoch isn't 0 (not had a time before)
+    {
+      Serial.println("epoch vs oldepoch > 1hr");
+      if (lastepochcount <= 3)
+      {
+        epoch = lastepoch; //If more than 1hr difference, and old/new different less than 'N' times
+        lastepochcount = lastepochcount + 1;
+        totalfailepoch = totalfailepoch + 1;
+
+        Serial.println("Using oldepoch from millis");
+        Serial.print("previously failed = ");
+        Serial.println(totalfailepoch);
+        Serial.println();
+      }
+      else
+      {
+        lastepochcount = 0; //It's different more than 'N' times, inital NTP must have been wrong.  Stay with last recieved epoch.
+        lastepoch = epoch;
+        Serial.println("Using new epoch even though different.  It's been different too many times - resetting");
+        Serial.print("previously failed = ");
+        Serial.print(totalfailepoch);
+        Serial.println(",  Making internal clock = new NTP time");
+        Serial.println();
+
+        epochstart = epoch;     //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
+        startmillis = millis(); //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
+      }
+    }
+    else
+    {
+      Serial.print("epoch is good");
+      Serial.print(",   previously failed = ");
+      Serial.println(totalfailepoch);
+      Serial.println("Making internal clock = new NTP time");
+      Serial.println();
+
+      lastepochcount = 0;     //With a good epoch reset the bad epoch counter to zero
+      lastepoch = epoch;      //With a good epoch make lastepoch the new good one for next loop
+      epochstart = epoch;     //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
+      startmillis = millis(); //Using NTP epoch time.  Reset the millis time variables to use this as new starting point
+    }
+
+      Serial.print("new NTP epoch = ");
+      Serial.print(epoch);
+      Serial.print(",   Millis epoch = ");
+      Serial.print(epoch2);
+      Serial.print(",   Difference (ms) = ");
+      Serial.println(abs(epoch - epoch2));
+
+    LastNTP = millis(); //Set the last millis time the NTP time was attempted
+    RequestedTime = 0;
+    TimeCheckLoop = 0;
+    return true;
+  }
+}
+
+
+// send an NTP request to the time server at the given address
+void sendNTPpacket(const IPAddress &address) 
+{
+  Serial.println("sending NTP packet");
+  // set all bytes in the buffer to 0
+  memset(packetBuffer, 0, NTP_PACKET_SIZE);
+  // Initialize values needed to form NTP request
+  // (see URL above for details on the packets)
+  packetBuffer[0] = 0b11100011; // LI, Version, Mode
+  packetBuffer[1] = 0;          // Stratum, or type of clock
+  packetBuffer[2] = 6;          // Polling Interval
+  packetBuffer[3] = 0xEC;       // Peer Clock Precision
+  // 8 bytes of zero for Root Delay & Root Dispersion
+  packetBuffer[12] = 49;
+  packetBuffer[13] = 0x4E;
+  packetBuffer[14] = 49;
+  packetBuffer[15] = 52;
+
+  // all NTP fields have been given values, now
+  // you can send a packet requesting a timestamp:
+  udp.beginPacket(address, 123); //NTP requests are to port 123
+  udp.write(packetBuffer, NTP_PACKET_SIZE);
+  udp.endPacket();
+}
+
+
+//Update the time
+void DecodeEpoch(unsigned long currentTime)
+{
+  // print the raw epoch time from NTP server
+   if (printNTP ==1 && printthings ==1){
+  Serial.print("The epoch UTC time is ");
+  Serial.print(epoch);
+  Serial.println();
+
+  // print the hour, minute and second:
+  Serial.print("The UTC time is ");      // UTC is the time at Greenwich Meridian (GMT)
+  Serial.print((epoch % 86400L) / 3600); // print the hour (86400 equals secs per day)
+  Serial.print(':');
+  
+  if (((epoch % 3600) / 60) < 10)
+  {
+    // In the first 10 minutes of each hour, we'll want a leading '0'
+    Serial.print('0');
+  }
+
+  Serial.print((epoch % 3600) / 60); // print the minute (3600 equals secs per minute)
+  Serial.print(':');
+
+  if ((epoch % 60) < 10)
+  {
+    // In the first 10 seconds of each minute, we'll want a leading '0'
+    Serial.print('0');
+  }
+
+  Serial.println(epoch % 60); // print the second
+   }
+  hour = (currentTime % 86400L) / 3600;
+
+  minute = (currentTime % 3600) / 60;
+  second = currentTime % 60;
+
+  clock_AMPM = "AM";      //Default to AM
+
+
+  //If it's 12 or greater (e.g 12 > 23) go to PM
+  if (hour >= 12)
+  {
+    clock_AMPM = "PM";
+  }
+
+  //If it's greater than 12 (e.g 13 > 23) deduct 12 to make 1 > 11
+  if (hour > 12)
+  {
+    hour = hour - 12;
+  }
+  
+  if (printNTP ==1 && printthings ==1){
+  Serial.print("UTC Hour: ");
+  Serial.print(hour);
+  Serial.print(",   Minute: ");
+  Serial.print(minute);
+  Serial.print(",   Second: ");
+  Serial.print(second);
+  Serial.print(",   clock_AMPM: ");
+  Serial.println(clock_AMPM);
+  Serial.println();
+  }
+
+  //Work out Hours/min into minutes from midnight to Calculate if it's AM or PM time
+  working_hourtomin = hour;
+
+  //PM add 12.  e,g 1PM = 13:00
+  if (clock_AMPM == "PM")
+  {
+    working_hourtomin = hour + 12;
+  }
+
+  //Midnight = 0
+  if (clock_AMPM == "AM" && hour == 12)
+  {
+    working_hourtomin = 0;
+  }
+
+  //Noon = 12
+  if (clock_AMPM == "PM" && hour == 12)
+  {
+    working_hourtomin = 12;
+  }
+
+  clock_minutes_from_midnight = ((working_hourtomin * 60) + minute);
+
+  //Get local minutes for day/night calc
+  local_clock_minutes_from_midnight = clock_minutes_from_midnight + (localUTC * 60);
+
+  //If local_minutes is negative (e.g Negative UTC)
+  if (local_clock_minutes_from_midnight > 1440)
+  {
+    local_clock_minutes_from_midnight = local_clock_minutes_from_midnight - 1440;
+  }
+
+    //If local_minutes is negative (e.g Negative UTC)
+  if (local_clock_minutes_from_midnight <0 )
+  {
+    local_clock_minutes_from_midnight = local_clock_minutes_from_midnight + 1440;
+  }
+
+
+  if (printNTP ==1 && printthings ==1){
+  Serial.print("UTC Clock - Mins from midnight = ");
+  Serial.print(clock_minutes_from_midnight);
+  Serial.print(",   Local - Clock - Mins from midnight = ");
+  Serial.println(local_clock_minutes_from_midnight);
+  Serial.println();
+  Serial.println("****************");
+  Serial.println();
+  }
+  
+  //Work out Hours/min into minutes from midnight
+  working_hourtomin = hour_sunrise;
+
+  //PM add 12
+  if (strcmp(SR_AMPM, "P") == 0)
+  {
+    working_hourtomin = hour_sunrise + 12;
+  }
+
+  //Midnight = 0
+  if (strcmp(SR_AMPM, "A") == 0 && hour_sunrise == 12)
+  {
+    working_hourtomin = 0;
+  }
+
+  //Noon = 12
+  if (strcmp(SR_AMPM, "P") == 0 && hour_sunrise == 12)
+  {
+    working_hourtomin = 12;
+  }
+
+  
+
+  //UTC number of minutes from midnight until sunrise
+  sunrise_minutes_from_midnight = ((working_hourtomin * 60) + minute_sunrise);   
+
+  //Convert UTC sunrise_minutes_from_midnight into local_sunrise_minutes_from_midnight with UTC
+  local_sunrise_minutes_from_midnight = sunrise_minutes_from_midnight + (localUTC * 60);
+
+  //If local_minutes is greater than 1 day (e.g large postive UTC)
+  if (local_sunrise_minutes_from_midnight > 1440)
+  {
+    local_sunrise_minutes_from_midnight = local_sunrise_minutes_from_midnight - 1440;
+  }
+
+  //If local_minutes is negative (e.g Negative UTC)
+  if (local_sunrise_minutes_from_midnight <0 )
+  {
+    local_sunrise_minutes_from_midnight = local_sunrise_minutes_from_midnight + 1440;
+  }
+
+  //Work out Hours/min into minutes from midnight
+  working_hourtomin = hour_sunset;
+
+  //PM add 12
+  if (strcmp(SS_AMPM, "P") == 0)
+  {
+    working_hourtomin = hour_sunset + 12;
+  }
+
+  //Midnight = 0
+  if (strcmp(SS_AMPM, "A") == 0 && hour_sunset == 12)
+  {
+    working_hourtomin = 0;
+  }
+
+  //Noon = 12
+  if (strcmp(SS_AMPM, "P") == 0 && hour_sunset == 12)
+  {
+    working_hourtomin = 12;  Serial.println();
+  }
+
+ 
+  sunset_minutes_from_midnight = ((working_hourtomin * 60) + minute_sunset);
+
+  //Convert UTC sunrise_minutes_from_midnight into local_sunrise_minutes_from_midnight with UTC
+  local_sunset_minutes_from_midnight = sunset_minutes_from_midnight + (localUTC * 60);
+
+  //If local_minutes is greater than 1 day (e.g large postive UTC)
+  if (local_sunset_minutes_from_midnight > 1440)
+  {
+    local_sunset_minutes_from_midnight = local_sunset_minutes_from_midnight - 1440;
+  }
+  
+  //If local_minutes is negative (e.g Negative UTC)
+  if (local_sunset_minutes_from_midnight <0 )
+  {
+    local_sunset_minutes_from_midnight = local_sunset_minutes_from_midnight + 1440;
+  }
+
+  if (printthings ==1 && printNTP == 1){
+  Serial.print("UTC Hour: ");
+  Serial.print(hour);
+  Serial.print(",   Minute: ");
+  Serial.print(minute);
+  Serial.print(",   Second: ");
+  Serial.println(second);
+  Serial.println();
+
+  Serial.print("local_sunrise_minutes_from_midnight = ");
+  Serial.print(local_sunrise_minutes_from_midnight);
+  Serial.print(",   local_sunset_minutes_from_midnight = ");
+  Serial.println(local_sunset_minutes_from_midnight);
+  Serial.print("sunrise_minutes_from_midnight = ");
+  Serial.print(sunrise_minutes_from_midnight);
+  Serial.print(",   sunset_minutes_from_midnight = ");
+  Serial.println(sunset_minutes_from_midnight);
+  Serial.println();
+  }
+}
