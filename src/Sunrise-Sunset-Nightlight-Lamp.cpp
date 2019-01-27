@@ -56,6 +56,7 @@
 #include <DNSServer.h>
 #include <FS.h>
 #include <string.h>
+#include <CapacitiveSensor.h> //$$$
 
 #include <SoftwareSerial.h>    //Library for serial comms to TF Sound module
 #include <DFPlayer_Mini_Mp3.h> //Library for TF Sound module
@@ -90,7 +91,7 @@
 */
 
 //*** TESTING use only.  See testing section at end of setup
-const int printthings = 1; //*TESTING* Flag to enable/disable printing on informations
+const int verbose_output = 0; //*TESTING* Flag to enable/disable printing on informations
 
 //LED details
 #define NUM_LEDS_PER_STRIP 13 //Number of LEDs per strip
@@ -128,12 +129,13 @@ String Alarmfilename = "alarm.txt";     //Filename for storing Sunrise UTC in SP
 //Lightmode, TARDIS, Longitude/Latitude and UTC are stated here but overwritten when webpage credentials are entered (if using WiFi Manager)
 const char *NTPServerName = "0.nz.pool.ntp.org"; //local NTP server
 int localUTC = 12;                               //Country UTC offset, needed for UTC for day/night calc  (+12 for NZ)  don't need to change for daylight saving as no needed for day/night
+int UTCoffset = 0;                               //Set my user with touch button +1, -1, 0
 int lightmode = 0;                               //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (but off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
 int TARDIS = 1;                                  //Used for my TARDIS lamp.  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
 
 //int NTPSecondstowait = 10800;     //Wait between NTP pulls (sec)
-int NTPSecondstowait = 20 * 60 * 60; //Wait between NTP pulls (sec)
-int APISecondstowait = 6 * 60 * 60;  //Wait between Sunrise API pulls (sec)
+int NTPSecondstowait = 1 * 60 * 60; //Wait between NTP pulls (sec)
+int APISecondstowait = 6 * 60 * 60; //Wait between Sunrise API pulls (sec)
 int SecondsSinceLastAPI = 0;
 
 const int LEDSecondstowait = 5; //Wait between LED updates (sec)
@@ -143,6 +145,10 @@ const int change = 1;           //Speed of LED change in tones.  Recommend = 1
 int mp3vol = 25;               //Volume for DF card player
 int mp3_selected = 1;          //Default mp3 to play ("mp3/0001.mp3" on SDcard)
 SoftwareSerial mySerial(4, 5); // Declare pin RX & TX pins for TF Sound module.  Using D1 (GPIO 5) and D2 (GPIO 4)
+
+int touchthreshold = 100; //Min value from touch sensor to trigger
+int touchtimemin = 500;   //Min touch to trigger spoken clock_minutes
+int touchtimemax = 2000;  //Max value to trigger spoken clock, greater than go to UTC change
 
 //*************************
 //*** Things to change  ***
@@ -180,6 +186,7 @@ int printNTP = 0;                                                   //Set to 1 w
 int SecondsSinceLastNTP;                                            //Counts seconds since last NTP pull
 int timefactor = 1;                                                 //accellerate time by this factor (for testing)
 int retryNTP = 0;                                                   //Counts the number of times the NTP Server request has had to retry
+int UTC_Cycle = 53;
 
 //LED Flash variables
 int flash_phase = 0;   //If x minutes within top of hour flash the LEDs
@@ -230,11 +237,21 @@ void WiFi_and_Credentials();                  //Get WiFi credentials if using Wi
 void checkreset(int);                         //Check if reset button has been pressed
 void sunrise_sunset();                        //Calculate sunrise/sunset LED colours
 void SpeakClock();
-char *mp3string(const unsigned int, const char *);
+void touchsensor_check();
+
+//Touch sensors
+long touchmillis;
+long press_period;
+const int cap1 = 2;  // D4 470k resistor between pins with 22pf cap in parallel
+const int cap2 = 12; // D6 Capacitive Sensor
+CapacitiveSensor csensy = CapacitiveSensor(cap1, cap2);
+long touchsensor = csensy.capacitiveSensor(30);
 
 void setup()
 {
   Serial.begin(9600);
+
+  csensy.set_CS_AutocaL_Millis(0xFFFFFFFF); //Touch sensor Initialise
 
   pinMode(0, INPUT); //GPIO0 (D3) to GND to reset ESP2866 Credentials
 
@@ -283,11 +300,11 @@ void setup()
     buffer7[0] = alarm[x];
     alarmhour = atoi(buffer7);
 
-    Serial.print(x);
+    Serial.print(x - 1);
     Serial.print(":");
     Serial.print(alarmhour);
 
-    if (alarmhour > 1)
+    if (alarmhour > 9)
     {
       Serial.print(" correcting to 0 ");
       alarm[x] = 0;
@@ -356,21 +373,26 @@ void setup()
   startmillis = millis(); //get starting point for millis
   API_Request();          //Get sunrise/sunset times
 
-  Serial.print("millis = ");
-  Serial.print(millis());
-  Serial.print(",   start millis = ");
-  Serial.println(startmillis);
-  Serial.print("epochstart = ");
-  Serial.print(epochstart);
-  Serial.print(",   epoch = ");
-  Serial.println(epoch);
+  if (verbose_output == 1)
+  {
+    Serial.print("millis = ");
+    Serial.print(millis());
+    Serial.print(",   start millis = ");
+    Serial.println(startmillis);
+    Serial.print("epochstart = ");
+    Serial.print(epochstart);
+    Serial.print(",   epoch = ");
+    Serial.println(epoch);
+  }
 }
 
 //Do the main execution loop
 void loop()
 {
+
   //Blynk.run();          //If Blynk being used
 
+  touchsensor_check();
   checkreset(0); //Has the GPIO (D3) been taken low to reset WiFiManager / clears SPIFFS?
 
   //Get epoch from millis count.  May get over writtem by NTP pull.  timefactor is for testing to accellerate time.
@@ -385,15 +407,18 @@ void loop()
     SecondsSinceLastNTP = (millis() - LastNTP) / 1000; //How many seconds since LastNTP pull
     if (SecondsSinceLastNTP > NTPSeconds_to_wait)
     {
-      Serial.print("millis = ");
-      Serial.println(millis());
-      Serial.print("start millis = ");
-      Serial.println(startmillis);
-      Serial.print("epochstart = ");
-      Serial.println(epochstart);
-      Serial.print("epoch = ");
-      Serial.println(epoch);
-      Serial.println("");
+      if (verbose_output == 1)
+      {
+        Serial.print("millis = ");
+        Serial.println(millis());
+        Serial.print("start millis = ");
+        Serial.println(startmillis);
+        Serial.print("epochstart = ");
+        Serial.println(epochstart);
+        Serial.print("epoch = ");
+        Serial.println(epoch);
+        Serial.println("");
+      }
 
       Request_Time(); //Get the timedata
       printNTP = 1;   //1 is a flag to serialprint the time (only used for NTP pull not for millis updates)
@@ -459,7 +484,7 @@ void loop()
     if (flash_phase == 0)
     {
       DoTheLEDs();
-      SpeakClock();
+      //SpeakClock();
     }
 
     yield();
@@ -739,9 +764,6 @@ void WiFi_and_Credentials()
   //Entry x 5 +5 gives range of 55-255
   howbright = (howbright_temp * 50) + 5;
 
-  // Serial.print("Brightness = ");
-  // Serial.println(howbright);
-
   //Get UTC from saved file and turn into an Int and check it's between 0-24
   char buffer4[3];
   buffer4[0] = UTC[0];
@@ -816,16 +838,18 @@ BLYNK_WRITE(V3) // Widget WRITEs to Virtual Pin
 //Calculate LED colours phases on the phase of the sun using sunrise API data and NTP time converted to local time (using UTC offset)
 void DoTheLEDs()
 {
-  Serial.print("UTC Hour: ");
-  Serial.print(hour);
-  Serial.print(",   Minute: ");
-  Serial.print(minute);
-  Serial.print(",   Second: ");
-  Serial.print(second);
-  Serial.print(",   clock_AMPM: ");
-  Serial.println(clock_AMPM);
-  Serial.println();
-
+  if (verbose_output == 1)
+  {
+    Serial.print("UTC Hour: ");
+    Serial.print(hour);
+    Serial.print(",   Minute: ");
+    Serial.print(minute);
+    Serial.print(",   Second: ");
+    Serial.print(second);
+    Serial.print(",   clock_AMPM: ");
+    Serial.println(clock_AMPM);
+    Serial.println();
+  }
   //Check for sunrise.  clock_minutes_from_midnight is time in minutes from midnight.  Sunrise/set minutes and clock are both UTC
   //Only compare UTC with UTC as local time (using UTC offset can change with daylight savings).  Local only for figuring out if it's night or day
 
@@ -895,7 +919,7 @@ void DoTheLEDs()
     night = 1;
   }
 
-  if (printthings == 1)
+  if (verbose_output == 1)
   {
 
     Serial.print("clock_minutes_from_midnight (UTC) = ");
@@ -970,7 +994,7 @@ void DoTheLEDs()
   FastLED.setBrightness(howbright);
   FastLED.show();
 
-  if (printthings == 1)
+  if (verbose_output == 1)
   {
     Serial.print("LED_phase = ");
     Serial.print(LED_phase);
@@ -1082,11 +1106,14 @@ void sunrise_sunset()
     SS_Phase_use = 0;
   }
 
-  Serial.print("SR_Phase_use = ");
-  Serial.print(SR_Phase_use);
-  Serial.print(",   SS_Phase_use = ");
-  Serial.println(SS_Phase_use);
-  Serial.println();
+  if (verbose_output == 1)
+  {
+    Serial.print("SR_Phase_use = ");
+    Serial.print(SR_Phase_use);
+    Serial.print(",   SS_Phase_use = ");
+    Serial.println(SS_Phase_use);
+    Serial.println();
+  }
 
   //sunrise:  Start with blue reducing to zero, and red increasing, when blue 0 increase green
   if (SR_Phase_use == 1 && blue >= 0)
@@ -1148,6 +1175,70 @@ void sunrise_sunset()
   }
 }
 
+void touchsensor_check()
+{
+  touchsensor = csensy.capacitiveSensor(30);
+
+  if (touchsensor > 0)
+  {
+    touchmillis = millis();
+    //delay(200);
+    touchsensor = csensy.capacitiveSensor(30);
+
+    // Serial.print(touchsensor);
+    // Serial.print(" - ");
+    // Serial.println(UTC_Cycle);
+
+    if (touchsensor > touchthreshold)
+    {
+      //How long has it been held down
+      while (csensy.capacitiveSensor(30) > touchthreshold)
+      {
+        if (millis() - touchmillis > 10000)
+        { //More than 10s then escape the while
+          break;
+        }
+        yield(); //Tight loop, yield to avoid WTC crashes
+      }
+
+      press_period = millis() - touchmillis;
+
+      if (press_period >= touchtimemin && press_period <= touchtimemax)
+      {
+        SpeakClock();
+      }
+
+      if (press_period > touchtimemax)
+      {
+        UTC_Cycle++;
+
+        if (UTC_Cycle > 54)
+        {
+          UTC_Cycle = 52;
+        }
+
+        mp3_play(UTC_Cycle); //Play selected mp3 in folder mp3
+        delay(1000);
+
+        if (UTC_Cycle == 52)
+        {
+          UTCoffset = -1;
+        }
+
+        if (UTC_Cycle == 53)
+        {
+          UTCoffset = 0;
+        }
+
+        if (UTC_Cycle == 54)
+        {
+          UTCoffset = 1;
+        }
+      }
+    }
+  }
+}
+
 //Check if flash is required and manipulate brightness
 void checkflash()
 {
@@ -1176,7 +1267,7 @@ void checkflash()
 
       if (mp3vol_temp < 0 || mp3vol_temp > 9)
       {
-        mp3vol = 25; //default to 25 in error state
+        mp3vol = 30; //default to 30 in error state
       }
       else
       {
@@ -1184,7 +1275,7 @@ void checkflash()
       }
 
       //Get Alarm on/off for hour
-      buffer9[0] = alarm[local_hour];
+      buffer9[0] = alarm[local_hour + 1];
       alarmhour = atoi(buffer9);
 
       //Check for alarm
@@ -1211,7 +1302,8 @@ void checkflash()
         }
         Serial.print("Completed flashes: ");
         mp3_set_volume(mp3vol); //Set the mp3 volume
-        mp3_play(mp3_selected); //Play selected mp3 in folder mp3
+        //mp3_play(mp3_selected); //Play selected mp3 in folder mp3
+        mp3_play(alarmhour); //Play selected mp3 in folder mp3  (e.g if the Alarm sequence is )
       }
       else
       {
@@ -1230,14 +1322,16 @@ void checkflash()
   }
 
   //Check for flash_start_miillis + flash_end_millis, if exceeded then flash_phase = 0 (off)
-  //flash ranges from 1-6, x10,000 for 10-60 seconds or if flash = 9  then flash the hour.
-  if (flash_phase == 1 && flash <= 8 && millis() > (flash_start_millis + (flash * 5000)))
+  //flash ranges from 1-8, x2000 for 2-16 seconds or if flash = 9  then flash the hour.
+  if (flash_phase == 1 && flash <= 8 && millis() > (flash_start_millis + (flash * 2000)))
   {
 
     flash_phase = 0;          //turn off flash_phase
     flash_start_millis = 0;   //reset start_millis
     flash_phase_complete = 1; //Flag to confirm a completed a flash cycle
-    mp3_stop();               //Stop the sounds (if they are playing)
+
+    //Stop mp3 with flashing use this, else comment out and let the mp3 play until finished
+    //mp3_stop();               //Stop the sounds (if they are playing)
 
     Serial.println("End flash phase...");
     Serial.println();
@@ -1267,7 +1361,7 @@ void checkflash()
     flash_phase = 0;          //turn off flash_phase
     flash_start_millis = 0;   //reset start_millis
     flash_phase_complete = 1; //Flag to confirm a completed a flash cycle
-    mp3_stop();               //Stop the sounds (if they are playing)
+    //mp3_stop();               //Stop the sounds (if they are playing)
 
     Serial.println();
     Serial.println("End flash phase...");
@@ -1553,7 +1647,7 @@ void sendNTPpacket(const IPAddress &address)
 void DecodeEpoch(unsigned long currentTime)
 {
   // print the raw epoch time from NTP server
-  if (printNTP == 1 && printthings == 1)
+  if (printNTP == 1 && verbose_output == 1)
   {
     Serial.print("The epoch UTC time is ");
     Serial.print(epoch);
@@ -1600,7 +1694,7 @@ void DecodeEpoch(unsigned long currentTime)
     hour = hour - 12;
   }
 
-  if (printNTP == 1 && printthings == 1)
+  if (printNTP == 1 && verbose_output == 1)
   {
     Serial.print("UTC Hour: ");
     Serial.print(hour);
@@ -1637,7 +1731,7 @@ void DecodeEpoch(unsigned long currentTime)
   clock_minutes_from_midnight = ((working_hourtomin * 60) + minute);
 
   //Get local minutes for day/night calc
-  local_clock_minutes_from_midnight = clock_minutes_from_midnight + (localUTC * 60);
+  local_clock_minutes_from_midnight = clock_minutes_from_midnight + ((localUTC + UTCoffset) * 60);
 
   //If local_minutes is negative (e.g Negative UTC)
   if (local_clock_minutes_from_midnight > 1440)
@@ -1651,7 +1745,7 @@ void DecodeEpoch(unsigned long currentTime)
     local_clock_minutes_from_midnight = local_clock_minutes_from_midnight + 1440;
   }
 
-  if (printNTP == 1 && printthings == 1)
+  if (printNTP == 1 && verbose_output == 1)
   {
     Serial.print("UTC Clock - Mins from midnight = ");
     Serial.print(clock_minutes_from_midnight);
@@ -1687,7 +1781,7 @@ void DecodeEpoch(unsigned long currentTime)
   sunrise_minutes_from_midnight = ((working_hourtomin * 60) + minute_sunrise);
 
   //Convert UTC sunrise_minutes_from_midnight into local_sunrise_minutes_from_midnight with UTC
-  local_sunrise_minutes_from_midnight = sunrise_minutes_from_midnight + (localUTC * 60);
+  local_sunrise_minutes_from_midnight = sunrise_minutes_from_midnight + ((localUTC + UTCoffset) * 60);
 
   //If local_minutes is greater than 1 day (e.g large postive UTC)
   if (local_sunrise_minutes_from_midnight > 1440)
@@ -1726,7 +1820,7 @@ void DecodeEpoch(unsigned long currentTime)
   sunset_minutes_from_midnight = ((working_hourtomin * 60) + minute_sunset);
 
   //Convert UTC sunrise_minutes_from_midnight into local_sunrise_minutes_from_midnight with UTC
-  local_sunset_minutes_from_midnight = sunset_minutes_from_midnight + (localUTC * 60);
+  local_sunset_minutes_from_midnight = sunset_minutes_from_midnight + ((localUTC + UTCoffset) * 60);
 
   //If local_minutes is greater than 1 day (e.g large postive UTC)
   if (local_sunset_minutes_from_midnight > 1440)
@@ -1740,7 +1834,7 @@ void DecodeEpoch(unsigned long currentTime)
     local_sunset_minutes_from_midnight = local_sunset_minutes_from_midnight + 1440;
   }
 
-  if (printthings == 1 && printNTP == 1)
+  if (verbose_output == 1 && printNTP == 1)
   {
     Serial.print("UTC Hour: ");
     Serial.print(hour);
@@ -1764,19 +1858,15 @@ void DecodeEpoch(unsigned long currentTime)
 
 void SpeakClock()
 {
-
-  //local_hour
-  //minute
-  //second
-
-  String AMPMmp3 = "";
-
+  int hour_mp3 = 0;
+  int minute_mp3 = 0;
+  int minute_mp3b = 999;
+  int AMPMmp3 = 50;
   int local_hour = local_clock_minutes_from_midnight / 60; //Turn minutes into the hour, needed for alarm check
 
-  AMPMmp3 = "AM";
   if (local_hour >= 12)
   {
-    AMPMmp3 = "PM";
+    AMPMmp3 = 51;
   }
 
   if (local_hour > 12)
@@ -1784,45 +1874,53 @@ void SpeakClock()
     local_hour -= 12;
   }
 
-  char *minute_mp3 = (char *)malloc(4);
-  char *minute_mp3b = (char *)malloc(4);
-
   //Hours mp3
-  char *hour_mp3 = mp3string(local_hour, "H");
+  hour_mp3 = 30 + local_hour;
 
   //Minute mp3 if == 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 30, 40, 50
   if (minute <= 19)
   {
-    minute_mp3 = mp3string(minute, "M");
+    minute_mp3 = 100 + minute;
   }
   else
   {
     if (minute % 10 == 0)
     {
-      minute_mp3 = mp3string(minute, "M");
+      minute_mp3 = 100 + minute;
     }
     else
     {
-      minute_mp3 = mp3string(((minute - minute % 10)), "M");
-      minute_mp3b = mp3string(minute % 10, "M");
+      minute_mp3 = 100 + (minute - (minute % 10));
+      minute_mp3b = 30 + (minute % 10);
     }
   }
 
   Serial.println();
+  Serial.println("****************");
   Serial.print("*MP3*  Hour: ");
   Serial.print(hour_mp3);
+  mp3_play(hour_mp3); //Play selected mp3 in folder mp3
+  delay(1000);
   Serial.print(",  Minute: ");
   Serial.print(minute_mp3);
+  mp3_play(minute_mp3); //Play selected mp3 in folder mp3
+  delay(1000);
   Serial.print(" / ");
   Serial.print(minute_mp3b);
-  Serial.print(" ");
-  Serial.println(AMPMmp3);
-  Serial.println();
-}
+  Serial.print(" AMPM: ");
 
-char *mp3string(const unsigned int hour, const char *type)
-{
-  char *ret_string = (char *)malloc(4);
-  sprintf(ret_string, "%s%d", type, hour);
-  return ret_string;
+  if (minute_mp3b != 999)
+  {
+    mp3_play(minute_mp3b);
+    delay(1000);
+  }
+
+  Serial.println(AMPMmp3);
+  Serial.println("****************");
+  Serial.println();
+  mp3_play(AMPMmp3); //Play selected mp3 in folder mp3
+  delay(1000);
+  //mp3_stop();             //Play selected mp3 in folder mp3
+  Serial.println();
+  Serial.println("****************");
 }
