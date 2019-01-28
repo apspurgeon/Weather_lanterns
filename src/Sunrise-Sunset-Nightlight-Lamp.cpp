@@ -124,7 +124,8 @@ int howbright = 255; //0-255 LED Brightness level
 String HTTPfilename = "APIaddress.txt"; //Filename for storing Sunrise API HTTP address in SPIFFS
 String Modefilename = "Mode.txt";       //Filename for storing Sunrise Mode in SPIFFS (3 digits:  Mode, Top lamp, Flash)
 String UTCfilename = "UTC.txt";         //Filename for storing Sunrise UTC in SPIFFS
-String Alarmfilename = "alarm.txt";     //Filename for storing Sunrise UTC in SPIFFS
+String chimefilename = "chime.txt";     //Filename for storing Sunrise UTC in SPIFFS
+String alarmfilename = "alarm.txt";     //Filename for storing Sunrise UTC in SPIFFS
 
 //Lightmode, TARDIS, Longitude/Latitude and UTC are stated here but overwritten when webpage credentials are entered (if using WiFi Manager)
 const char *NTPServerName = "0.nz.pool.ntp.org"; //local NTP server
@@ -148,7 +149,8 @@ SoftwareSerial mySerial(4, 5); // Declare pin RX & TX pins for TF Sound module. 
 
 int touchthreshold = 100; //Min value from touch sensor to trigger
 int touchtimemin = 500;   //Min touch to trigger spoken clock_minutes
-int touchtimemax = 2000;  //Max value to trigger spoken clock, greater than go to UTC change
+int touchtimemax = 2000;  //Max value to trigger spoken clock, greater than go to Alarm change
+int touchUTC = 10000;     //this value or more to go into UTC change
 
 //*************************
 //*** Things to change  ***
@@ -200,8 +202,15 @@ int completed_flashes = 0;    //Counts the number of completed flashes if Flash=
 //Create an array with 0-255 sine wave with array 0-31
 char sinetable[] = {127, 152, 176, 198, 217, 233, 245, 252, 254, 252, 245, 233, 217, 198, 176, 152, 128, 103, 79, 57, 38, 22, 38, 57, 79, 103};
 
-//Array for the alarm hours to go into.  24 digits starting with midnight.  0=no alarm, 1=alarm.  e.g 0000001111111111111111100
-char alarm[25];
+//Array for the chime hours to go into.  24 digits starting with midnight.  0=no chime, 1=chime.  e.g 0000001111111111111111100
+char chime[25];
+
+//Specified alarm time by user, in format HHMMAM/HHMMPM
+char alarm[6];
+int alarmstate = 55;                          //55=Alarm ON 56=Alarm OFF  (0055.mp3 / 0056.mp3)
+int alarm_local_minutes_from_midnight = 2000; //2000 minutes will never happen (e.g wont trigger - acceptable 0-1440)
+int alarmdone = -1;                           //Flag to make sure alarm runs only once, -1 is an invalid time (mins from midnight) so won't run
+int alarmmp3 = 0;                             //Which mp3 to play on alarm
 
 //Sunrise - Sunset API variables
 int h_sunrise, hour_sunrise, minute_sunrise, sunrise_minutes_from_midnight, local_sunrise_minutes_from_midnight;
@@ -238,6 +247,7 @@ void checkreset(int);                         //Check if reset button has been p
 void sunrise_sunset();                        //Calculate sunrise/sunset LED colours
 void SpeakClock();
 void touchsensor_check();
+void alarm_check();
 
 //Touch sensors
 long touchmillis;
@@ -291,23 +301,23 @@ void setup()
   FastLED.setBrightness(howbright);
   FastLED.show();
 
-  //Print the alarm array, which Hours are on/off for Alarm sound.
-  int alarmhour;
+  //Print the chime array, which Hours are on/off for chime sound.
+  int chimehour;
   char buffer7[0];
   for (int x = 1; x <= 24; x++)
   {
 
-    buffer7[0] = alarm[x];
-    alarmhour = atoi(buffer7);
+    buffer7[0] = chime[x];
+    chimehour = atoi(buffer7);
 
     Serial.print(x - 1);
     Serial.print(":");
-    Serial.print(alarmhour);
+    Serial.print(chimehour);
 
-    if (alarmhour > 9)
+    if (chimehour > 9)
     {
       Serial.print(" correcting to 0 ");
-      alarm[x] = 0;
+      chime[x] = 0;
     }
 
     if (x == 24)
@@ -484,7 +494,6 @@ void loop()
     if (flash_phase == 0)
     {
       DoTheLEDs();
-      //SpeakClock();
     }
 
     yield();
@@ -492,6 +501,7 @@ void loop()
 
   //Check if flash is require and manipulate the brightness
   checkflash();
+  alarm_check();
 }
 
 //Connect to the WiFi and manage credentials
@@ -583,10 +593,31 @@ void WiFi_and_Credentials()
         Serial.println("File Closed");
       }
 
-      //Read Alarm file data
-      File i = SPIFFS.open("\" & Alarmfilename", "r");
+      //Read chime file data
+      File i = SPIFFS.open("\" & chimefilename", "r");
 
       if (!i)
+      {
+        Serial.println("file open failed");
+      }
+      else
+      {
+        Serial.println("Reading Data from chime file:");
+        //Data from file
+
+        size_t size = i.size();
+
+        i.readBytes(chime, size);
+
+        i.close(); //Close file
+        Serial.printf("Read chime = %s\n", chime);
+        Serial.println("File Closed");
+      }
+
+      //Read alarm file data
+      File j = SPIFFS.open("\" & alarmfilename", "r");
+
+      if (!j)
       {
         Serial.println("file open failed");
       }
@@ -595,11 +626,11 @@ void WiFi_and_Credentials()
         Serial.println("Reading Data from alarm file:");
         //Data from file
 
-        size_t size = i.size();
+        size_t size = j.size();
 
-        i.readBytes(alarm, size);
+        j.readBytes(alarm, size);
 
-        i.close(); //Close file
+        j.close(); //Close file
         Serial.printf("Read alarm = %s\n", alarm);
         Serial.println("File Closed");
       }
@@ -620,12 +651,14 @@ void WiFi_and_Credentials()
     WiFiManagerParameter custom_latitude("Latitude", "Latitude", "", 10);
     WiFiManagerParameter custom_mode("Mode", "Mode", "", 4);
     WiFiManagerParameter custom_UTC("UTC", "UTC", "", 3);
-    WiFiManagerParameter custom_alarm("Alarm", "Alarm", "", 25);
+    WiFiManagerParameter custom_chime("chime", "chime", "", 25);
+    WiFiManagerParameter custom_alarm("alarm", "alarm", "", 7);
 
     wifiManager.addParameter(&custom_longitude);
     wifiManager.addParameter(&custom_latitude);
     wifiManager.addParameter(&custom_mode);
     wifiManager.addParameter(&custom_UTC);
+    wifiManager.addParameter(&custom_chime);
     wifiManager.addParameter(&custom_alarm);
 
     //WiFiManager will read stored WiFi Data, if it can't connect it will create a website to get new credentials
@@ -637,6 +670,7 @@ void WiFi_and_Credentials()
     sprintf(sunrise_api_request, "http://api.sunrise-sunset.org/json?lat=%s&lng=%s", +custom_latitude.getValue(), custom_longitude.getValue());
     sprintf(mode, "%s", +custom_mode.getValue());
     sprintf(UTC, "%s", +custom_UTC.getValue());
+    sprintf(chime, "%s", +custom_chime.getValue());
     sprintf(alarm, "%s", +custom_alarm.getValue());
 
     //Create New HTTP File And Write Data to It
@@ -690,11 +724,28 @@ void WiFi_and_Credentials()
       h.close(); //Close file
     }
 
-    //Create New alarm File And Write Data to It
+    //Create New chime File And Write Data to It
     //w=Write Open file for writing
-    File i = SPIFFS.open("\" & Alarmfilename", "w");
+    File i = SPIFFS.open("\" & chimefilename", "w");
 
     if (!i)
+    {
+      Serial.println("chime file open failed");
+    }
+    else
+    {
+      //Write data to file
+      Serial.println("Writing Data to chime File");
+      i.print(chime);
+      Serial.println("New file written");
+      i.close(); //Close file
+    }
+
+    //Create New alarm File And Write Data to It
+    //w=Write Open file for writing
+    File j = SPIFFS.open("\" & alarmfilename", "w");
+
+    if (!j)
     {
       Serial.println("alarm file open failed");
     }
@@ -702,9 +753,9 @@ void WiFi_and_Credentials()
     {
       //Write data to file
       Serial.println("Writing Data to alarm File");
-      i.print(alarm);
+      j.print(alarm);
       Serial.println("New file written");
-      i.close(); //Close file
+      j.close(); //Close file
     }
   }
 
@@ -778,6 +829,61 @@ void WiFi_and_Credentials()
   }
   Serial.print("UTC used = ");
   Serial.println(localUTC);
+
+  //Get Alarm from saved file and turn into an mins from midnight > alarm_local_minutes_from_midnight
+  char buffer5[2];
+
+  buffer5[0] = alarm[0]; //H
+  buffer5[1] = alarm[1]; //H
+  int alarmhour = atoi(buffer5);
+
+  buffer5[0] = alarm[2]; //M
+  buffer5[1] = alarm[3]; //M
+  int alarmminute = atoi(buffer5);
+
+  buffer5[0] = alarm[6]; //1-8 (mp3)
+  buffer5[1] = NULL;
+  alarmmp3 = atoi(buffer5);
+
+  buffer5[0] = alarm[4]; //A/P
+  buffer5[1] = NULL;
+
+  alarm_local_minutes_from_midnight = (alarmhour * 60) + (alarmminute);
+
+  if ((0 == strcmp(buffer5, "p") || 0 == strcmp(buffer5, "P")) && (alarmhour >= 1 && alarmhour <= 11))
+  {
+    alarm_local_minutes_from_midnight += (12 * 60);
+  }
+
+  //Check and override alarm time
+  if (alarmhour < 0 || alarmhour > 12 || alarmminute < 0 || alarmminute > 59)
+  {
+    alarm_local_minutes_from_midnight = 0;
+    alarmhour = 0;
+    alarmminute = 0;
+    alarmmp3 = 0; //No sound
+    Serial.println("Error in alarm time - overriding - nothing plays");
+  }
+
+  Serial.print("alarm_local_minutes_from_midnight = ");
+  Serial.print(alarm_local_minutes_from_midnight);
+
+  Serial.print(",  Alarm hour = ");
+  Serial.print(alarmhour);
+
+  Serial.print(",  Alarm minute = ");
+  Serial.print(alarmminute);
+
+  Serial.print(",  Alarm mp3 = ");
+  Serial.println(alarmmp3);
+
+  if (alarmmp3 <= 0 || alarmmp3 >= 9)
+  {
+    alarmmp3 = 1;
+  }
+
+  //Test_alarm
+  //alarm_local_minutes_from_midnight = 1030;
 }
 
 void ConnectToAP()
@@ -1194,7 +1300,7 @@ void touchsensor_check()
       //How long has it been held down
       while (csensy.capacitiveSensor(30) > touchthreshold)
       {
-        if (millis() - touchmillis > 10000)
+        if (millis() - touchmillis > touchUTC)
         { //More than 10s then escape the while
           break;
         }
@@ -1208,7 +1314,30 @@ void touchsensor_check()
         SpeakClock();
       }
 
-      if (press_period > touchtimemax)
+      if (press_period > touchtimemax && press_period < touchUTC)
+      {
+        if (alarmstate == 55)
+        {
+          alarmstate = 56;
+          Serial.println();
+          Serial.println("****************");
+          Serial.println("Alarm OFF");
+          Serial.println("****************");
+          Serial.println();
+          mp3_play(alarmstate);
+        }
+        else
+        {
+          alarmstate = 55;
+          Serial.println("****************");
+          Serial.println("Alarm ON");
+          Serial.println("****************");
+          Serial.println();
+          mp3_play(alarmstate);
+        }
+      }
+
+      if (press_period >= touchUTC)
       {
         UTC_Cycle++;
 
@@ -1216,9 +1345,6 @@ void touchsensor_check()
         {
           UTC_Cycle = 52;
         }
-
-        mp3_play(UTC_Cycle); //Play selected mp3 in folder mp3
-        delay(1000);
 
         if (UTC_Cycle == 52)
         {
@@ -1234,8 +1360,44 @@ void touchsensor_check()
         {
           UTCoffset = 1;
         }
+
+        mp3_play(UTC_Cycle); //Play selected mp3 in folder mp3
+        delay(1000);
       }
     }
+  }
+}
+
+void alarm_check()
+{
+
+  if (local_clock_minutes_from_midnight == alarm_local_minutes_from_midnight && alarmdone != local_clock_minutes_from_midnight)
+  {
+    alarmdone = alarm_local_minutes_from_midnight; //set flag so if statement above fails (plays once)
+
+    Serial.println();
+    Serial.println("****************");
+    Serial.print("Alarm!");
+
+    if (alarmstate == 55)
+    {
+      Serial.print(", Alarm ON,  mp3= ");
+      Serial.println(alarmmp3);
+      mp3_play(alarmmp3);
+    }
+    else
+    {
+      Serial.println(", Alarm OFF, No sound");
+    }
+
+    Serial.println("****************");
+    Serial.println();
+  }
+
+  //Reset alarmdone to -1 (to enable alarm to play again)
+  if (local_clock_minutes_from_midnight != alarm_local_minutes_from_midnight)
+  {
+    alarmdone = -1;
   }
 }
 
@@ -1255,14 +1417,14 @@ void checkflash()
 
       Serial.println("Start flash phase...");
 
-      int local_hour = local_clock_minutes_from_midnight / 60; //Turn mines into the hour, needed for alarm check
-      int alarmhour;
+      int local_hour = local_clock_minutes_from_midnight / 60; //Turn mines into the hour, needed for chime check
+      int chimehour;
       int mp3vol_temp;
-      char buffer9[0]; //Buffer from Alarm hour
+      char buffer9[0]; //Buffer from chime hour
       char buffer8[0]; //Buffer for MP3 Volume
 
       //Get volume
-      buffer8[0] = alarm[0];
+      buffer8[0] = chime[0];
       mp3vol_temp = atoi(buffer8);
 
       if (mp3vol_temp < 0 || mp3vol_temp > 9)
@@ -1274,21 +1436,21 @@ void checkflash()
         mp3vol = mp3vol_temp * 3.3; //30 is max volume, 9 x 3.3 = 29.7
       }
 
-      //Get Alarm on/off for hour
-      buffer9[0] = alarm[local_hour + 1];
-      alarmhour = atoi(buffer9);
+      //Get chime on/off for hour
+      buffer9[0] = chime[local_hour + 1];
+      chimehour = atoi(buffer9);
 
-      //Check for alarm
+      //Check for chime
       Serial.print("local clock_minutes from midnight = ");
       Serial.print(local_clock_minutes_from_midnight);
       Serial.print(",  Local hour = ");
       Serial.print(local_hour);
-      Serial.print(",  Alarm array for hour = ");
-      Serial.print(alarmhour);
+      Serial.print(",  chime array for hour = ");
+      Serial.print(chimehour);
 
-      if (alarmhour > 0)
+      if (chimehour > 0)
       {
-        Serial.print(",  Alarm ON, Volume = "); //Alarm is on, the alarm array didn't have 0 for this hour
+        Serial.print(",  chime ON, Volume = "); //chime is on, the chime array didn't have 0 for this hour
         Serial.print(mp3vol);
         Serial.print(", ");
 
@@ -1302,12 +1464,20 @@ void checkflash()
         }
         Serial.print("Completed flashes: ");
         mp3_set_volume(mp3vol); //Set the mp3 volume
-        //mp3_play(mp3_selected); //Play selected mp3 in folder mp3
-        mp3_play(alarmhour); //Play selected mp3 in folder mp3  (e.g if the Alarm sequence is )
+
+        if (chimehour >= 1 && chimehour <= 8)
+        {
+          mp3_play(chimehour); //Play selected mp3 in folder mp3  (e.g if the chime sequence is 1-8, play 0001.mp3 > 0008.mp3 )
+        }
+
+        if (chimehour == 9)
+        { //if chime sequence = 9 then don't play 0009.mp3, speak the clock time instead
+          SpeakClock();
+        }
       }
       else
       {
-        Serial.print(",  No Alarm, "); //The alarm array had 0, no alarm for this hour
+        Serial.print(",  No chime, "); //The chime array had 0, no chime for this hour
         if (flash == 9)
         {
           Serial.println(" Flashing hours");
@@ -1422,7 +1592,8 @@ void checkreset(int ClearSPIFFS)
       SPIFFS.remove("\" & HTTPfilename");
       SPIFFS.remove("\" & Modefilename");
       SPIFFS.remove("\" & UTCfilename");
-      SPIFFS.remove("\" & Alarmfilename");
+      SPIFFS.remove("\" & chimefilename");
+      SPIFFS.remove("\" & alarmfilename");
       SPIFFS.format();
       WiFi.disconnect();
 
@@ -1862,29 +2033,31 @@ void SpeakClock()
   int minute_mp3 = 0;
   int minute_mp3b = 999;
   int AMPMmp3 = 50;
-  int local_hour = local_clock_minutes_from_midnight / 60; //Turn minutes into the hour, needed for alarm check
+  int local_hour = local_clock_minutes_from_midnight / 60; //Turn minutes into the hour, needed for chime check
 
+  //Set to PM is 12pm or later
   if (local_hour >= 12)
   {
     AMPMmp3 = 51;
   }
 
+  //Convert 24hr into 12hr clock
   if (local_hour > 12)
   {
     local_hour -= 12;
   }
 
-  //Hours mp3
+  //Hours mp3.  Ranges from 30 (00 midnight) to 42 (Twelve)
   hour_mp3 = 30 + local_hour;
 
-  //Minute mp3 if == 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 30, 40, 50
+  //Minute mp3.  Specific words for 00 (OClock), 01, 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 30, 40, 50
   if (minute <= 19)
   {
     minute_mp3 = 100 + minute;
   }
   else
   {
-    if (minute % 10 == 0)
+    if (minute % 10 == 0) //If it's MOD 0, this means it's at the top of the hour (O'Clock)
     {
       minute_mp3 = 100 + minute;
     }
@@ -1897,7 +2070,7 @@ void SpeakClock()
 
   Serial.println();
   Serial.println("****************");
-  Serial.print("*MP3*  Hour: ");
+  Serial.print("Speaking time  Hour: ");
   Serial.print(hour_mp3);
   mp3_play(hour_mp3); //Play selected mp3 in folder mp3
   delay(1000);
@@ -1920,7 +2093,6 @@ void SpeakClock()
   Serial.println();
   mp3_play(AMPMmp3); //Play selected mp3 in folder mp3
   delay(1000);
-  //mp3_stop();             //Play selected mp3 in folder mp3
+  //mp3_stop();
   Serial.println();
-  Serial.println("****************");
 }
