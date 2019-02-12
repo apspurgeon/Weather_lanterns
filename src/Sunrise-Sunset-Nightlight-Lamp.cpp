@@ -153,10 +153,10 @@ int UTCoffset = 0;                               //Set my user with touch button
 int lightmode = 0;                               //0 = day/night (day = Yellow / night = Blue   e.g TARDIS Lamp)    1 = night light mode with sunrise/set colour changes (but off during daytime)    2 = night light mode without sunrise/set changes  (binary on (day) /off (night))
 int TARDIS = 1;                                  //Used for my TARDIS lamp.  All LEDs work as per day/night lightmode, except 1 LED (last in strip) at the top of the TADIS which is forced Blue.
 
-//int NTPSecondstowait = 10800;     //Wait between NTP pulls (sec)
 int NTPSecondstowait = 1 * 60 * 60; //Wait between NTP pulls (sec)
 int APISecondstowait = 6 * 60 * 60; //Wait between Sunrise API pulls (sec)
 int SecondsSinceLastAPI = 0;
+int timefactor = 1; //Used for testing to accelerate time
 
 const int LEDSecondstowait = 5; //Wait between LED updates (sec)
 const int minswithin = 60;      //Minutes within sunrise / sunset to begin the LED colour change sequence  (60 = phase starts 30mins before sunrise/set and end 30mins after)
@@ -168,7 +168,7 @@ SoftwareSerial mySerial(4, 5); // Declare pin RX & TX pins for TF Sound module. 
 
 int touchthreshold = 300; //Min value from touch sensor to trigger
 int touchstopmin = 300;   //Min touch to trigger a mp3_stop()
-int touchtimemin = 750;   //Min touch to trigger spoken clock_minutes
+int touchtimemin = 1000;  //Min touch to trigger spoken clock_minutes
 int touchalarmmin = 3000; //Max value to trigger spoken clock, greater than go to Alarm change
 int touchUTC = 10000;     //this value or more to go into UTC change
 
@@ -222,7 +222,6 @@ int NTP_Seconds_to_wait = 1;                                        //Initial wa
 String clock_AMPM;                                                  //AM/PM from NTP Server
 int printNTP = 0;                                                   //Set to 1 when a NTP is pulled.  The decode_epoch function used for both NTP epoch and millis epoch.  printNTP=1 in this fucnction only print new NTP results (time).
 int Seconds_SinceLast_NTP_millis;                                   //Counts seconds since last NTP pull
-int timefactor = 1;                                                 //Used for testing to accelerate time                                             //accellerate time by this factor (for testing)
 int retryNTP = 0;                                                   //Counts the number of times the NTP Server request has had to retry
 int UTC_Cycle = 53;
 
@@ -295,7 +294,7 @@ void setup()
     flash = 1;              //Turn off flash if in testing mode
     NTPSecondstowait = 600; //Wait between NTP pulls (sec)
     APISecondstowait = 600; //Wait between Sunrise API pulls (sec)
-    timefactor = 1;         //accellerate time by this factor
+    timefactor = 50;        //accellerate time by this factor
     lightmode = 1;          //overide lightmode
     TARDIS = 3;             //overide top light
     localUTC = 13;          //overide UTC
@@ -912,13 +911,11 @@ void DoTheLEDs()
     Serial.print(SR_Phase);
     Serial.print(",   Sunset phase = ");
     Serial.println(SS_Phase);
-
     Serial.print("Mins to Sunset phase = ");
     Serial.print(sunset_minutes_from_midnight - clock_minutes_from_midnight - int(minswithin / 2));
     Serial.print(",   Mins to Sunrise phase = ");
     Serial.print(sunrise_minutes_from_midnight - clock_minutes_from_midnight - int(minswithin / 2));
-
-    Serial.print(",   retryNTP = ");
+    Serial.print(", retryNTP = ");
     Serial.println(retryNTP);
   }
 
@@ -1271,7 +1268,6 @@ void alarm_check()
 //Check if flash is required and manipulate brightness
 void checkflash()
 {
-
   //if flash >= 1 (enabled) and minutes = 0 (top of hour) and LEDs are on (e.g not off during day) then set flash_phase = 1
   if (minute == 0 && flash >= 1 && flash_phase_complete == 0 && (red + blue + green) > 0)
   {
@@ -1350,6 +1346,8 @@ void checkflash()
     flash_phase = 0;          //turn off flash_phase
     flash_start_millis = 0;   //reset start_millis
     flash_phase_complete = 1; //Flag to confirm a completed a flash cycle
+    completed_flashes = 0;    //reset how many flashes flag
+    //mp3_stop();               //Stop the sounds (if they are playing)
 
     //Stop mp3 with flashing use this, else comment out and let the mp3 play until finished
     //mp3_stop();               //Stop the sounds (if they are playing)
@@ -1382,6 +1380,7 @@ void checkflash()
     flash_phase = 0;          //turn off flash_phase
     flash_start_millis = 0;   //reset start_millis
     flash_phase_complete = 1; //Flag to confirm a completed a flash cycle
+    completed_flashes = 0;    //reset how many flashes flag
     //mp3_stop();               //Stop the sounds (if they are playing)
 
     Serial.println();
@@ -1390,11 +1389,11 @@ void checkflash()
     Serial.println("****************");
   }
 
-  //Use a flag flash_phase_complete which is only set back to 0 when in minute 2.  This stops more than 1 flash cycle during a minute=0 scenario
-  if (minute >= 2)
+  //Use a flag flash_phase_complete which is only set back to 0 when in minute 30.  Using 30 in case in demo mode (time factor=big number)
+  //This stops more than 1 flash cycle during a minute=0 scenario
+  if (minute >= 30)
   {
-    flash_phase_complete = 0;
-    completed_flashes = 0;
+    flash_phase_complete = 0; //Reset flag to allow new flash cycle.
   }
 
   //If in flash mode then do the flash routine
@@ -1549,7 +1548,11 @@ void SpeakClock()
 
   Serial.println();
   Serial.println("****************");
-  Serial.print("Speaking time  Hour: ");
+  Serial.print("Local time: ");
+  Serial.print(local_hour);
+  Serial.print(":");
+  Serial.println(minute);
+  Serial.print("Speaking mp3  Hour: ");
   Serial.print(hour_mp3);
   mp3_play(hour_mp3); //Play selected mp3 in folder mp3
   delay(1000);
