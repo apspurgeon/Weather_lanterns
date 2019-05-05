@@ -54,6 +54,11 @@
 #include <CapacitiveSensor.h>
 #include <SoftwareSerial.h>    //Library for serial comms to TF Sound module
 #include <DFPlayer_Mini_Mp3.h> //Library for TF Sound module
+#include <ESP8266WiFiMulti.h>
+#include <ArduinoOTA.h>
+
+ESP8266WiFiMulti wifiMulti;     // Create an instance of the ESP8266WiFiMulti class, called 'wifiMulti'
+
 //#include <DNSServer.h>
 //#include <Arduino.h>
 //#include <BlynkSimpleEsp8266.h>
@@ -140,11 +145,11 @@ const int red_night = 0;
 int howbright = 255; //0-255 LED Brightness level.  Ooverwritten by user input
 
 //SPIFFS Filenames
-String HTTPfilename = "APIaddress.txt"; //Filename for storing Sunrise API HTTP address in SPIFFS
-String Modefilename = "Mode.txt";       //Filename for storing Sunrise Mode in SPIFFS (3 digits:  Mode, Top lamp, Flash)
-String UTCfilename = "UTC.txt";         //Filename for storing Sunrise UTC in SPIFFS
-String chimefilename = "chime.txt";     //Filename for storing Sunrise UTC in SPIFFS
-String alarmfilename = "alarm.txt";     //Filename for storing Sunrise UTC in SPIFFS
+String HTTPfilename = "/APIaddress.txt"; //Filename for storing Sunrise API HTTP address in SPIFFS
+String Modefilename = "/Mode.txt";       //Filename for storing Sunrise Mode in SPIFFS (3 digits:  Mode, Top lamp, Flash)
+String UTCfilename = "/UTC.txt";         //Filename for storing Sunrise UTC in SPIFFS
+String chimefilename = "/chime.txt";     //Filename for storing Sunrise UTC in SPIFFS
+String alarmfilename = "/alarm.txt";     //Filename for storing Sunrise UTC in SPIFFS
 
 //Lightmode, TARDIS, Longitude/Latitude and UTC are stated here but overwritten when webpage credentials are entered (if using WiFi Manager)
 const char *NTPServerName = "0.nz.pool.ntp.org"; //local NTP server
@@ -317,12 +322,36 @@ void setup()
     Serial.print(",   epoch = ");
     Serial.println(epoch);
   }
+  ArduinoOTA.onStart([]() {
+    Serial.println("Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR)
+      Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR)
+      Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR)
+      Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR)
+      Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR)
+      Serial.println("End Failed");
+  });
+  ArduinoOTA.begin();  
 }
 
 //Do the main execution loop
 void loop()
 {
   //Blynk.run();          //If Blynk being used
+  ArduinoOTA.handle();
   checkreset(0);       //Has the GPIO (D3) been taken low to reset WiFiManager / clears SPIFFS?
   update_epoch_time(); //update epoch time by millis update ot NTP request
   decode_epoch(epoch); //epoch has been updated, Now turn this into UTC clock_minutes_from_midnight
@@ -337,6 +366,7 @@ void loop()
   }
 }
 
+//Connect to the WiFi and manage credentials
 //Connect to the WiFi and manage credentials
 void WiFi_and_Credentials()
 {
@@ -357,14 +387,17 @@ void WiFi_and_Credentials()
   else
   {
     Serial.println("SPIFFS Initialization...failed");
+    SPIFFS.end();
   }
 
-  if (SPIFFS.exists("\" & HTTPfilename") == true)
+  Serial.println("Trying files...");
+
+  if (SPIFFS.exists(HTTPfilename) == true)
   {
     Serial.println("File already exisits.  Read stored data.");
 
     //Read HTTP addresss file data
-    File f = SPIFFS.open("\" & HTTPfilename", "r");
+    File f = SPIFFS.open(HTTPfilename, "r");
 
     if (!f)
     {
@@ -384,7 +417,7 @@ void WiFi_and_Credentials()
       Serial.println("File Closed");
 
       //Read Mode file data
-      File g = SPIFFS.open("\" & Modefilename", "r");
+      File g = SPIFFS.open(Modefilename, "r");
 
       if (!g)
       {
@@ -405,7 +438,7 @@ void WiFi_and_Credentials()
       }
 
       //Read UTC file data
-      File h = SPIFFS.open("\" & UTCfilename", "r");
+      File h = SPIFFS.open(UTCfilename, "r");
 
       if (!h)
       {
@@ -426,7 +459,7 @@ void WiFi_and_Credentials()
       }
 
       //Read chime file data
-      File i = SPIFFS.open("\" & chimefilename", "r");
+      File i = SPIFFS.open(chimefilename, "r");
 
       if (!i)
       {
@@ -447,7 +480,7 @@ void WiFi_and_Credentials()
       }
 
       //Read alarm file data
-      File j = SPIFFS.open("\" & alarmfilename", "r");
+      File j = SPIFFS.open(alarmfilename, "r");
 
       if (!j)
       {
@@ -477,7 +510,7 @@ void WiFi_and_Credentials()
     Serial.println("Filename DOESN'T exisit");
 
     //If file doesn't exist, get details from the user with wifimanager website
-    //create http address and store in APIaddresst.txt file
+    //create http address and store in APIaddress.txt file
 
     WiFiManagerParameter custom_longitude("Longitude", "Longitude", "", 10);
     WiFiManagerParameter custom_latitude("Latitude", "Latitude", "", 10);
@@ -507,7 +540,7 @@ void WiFi_and_Credentials()
 
     //Create New HTTP File And Write Data to It
     //w=Write Open file for writing
-    File f = SPIFFS.open("\" & HTTPfilename", "w");
+    File f = SPIFFS.open(HTTPfilename, "w");
 
     if (!f)
     {
@@ -524,7 +557,7 @@ void WiFi_and_Credentials()
 
     //Create New Mode File And Write Data to It
     //w=Write Open file for writing
-    File g = SPIFFS.open("\" & Modefilename", "w");
+    File g = SPIFFS.open(Modefilename, "w");
 
     if (!g)
     {
@@ -541,7 +574,7 @@ void WiFi_and_Credentials()
 
     //Create New UTC File And Write Data to It
     //w=Write Open file for writing
-    File h = SPIFFS.open("\" & UTCfilename", "w");
+    File h = SPIFFS.open(UTCfilename, "w");
 
     if (!h)
     {
@@ -558,7 +591,7 @@ void WiFi_and_Credentials()
 
     //Create New chime File And Write Data to It
     //w=Write Open file for writing
-    File i = SPIFFS.open("\" & chimefilename", "w");
+    File i = SPIFFS.open(chimefilename, "w");
 
     if (!i)
     {
@@ -575,7 +608,7 @@ void WiFi_and_Credentials()
 
     //Create New alarm File And Write Data to It
     //w=Write Open file for writing
-    File j = SPIFFS.open("\" & alarmfilename", "w");
+    File j = SPIFFS.open(alarmfilename, "w");
 
     if (!j)
     {
@@ -743,6 +776,7 @@ void WiFi_and_Credentials()
   //Test_alarm
   //alarm_local_minutes_from_midnight = 1030;
 }
+
 
 void ConnectToAP()
 {
@@ -2099,7 +2133,6 @@ void update_epoch_time()
         //If after 2 tried then try re-requesting the time
         retryNTP += 1; //Update the counter for informational only, not used in the program
         Request_Time();
-        TimeCheckLoop = 0; //Reset the counter back to 0 after a request (we only use the latest packets from requests)
       }
     }
 
