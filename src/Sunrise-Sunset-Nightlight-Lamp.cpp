@@ -177,7 +177,7 @@ int touchtimemin = 1000;  //Min touch to trigger spoken clock_minutes
 int touchalarmmin = 3000; //Max value to trigger spoken clock, greater than go to Alarm change
 int touchUTC = 10000;     //this value or more to go into UTC change
 
-int verbose_output = 0; //Flag to enable/disable printing on informations
+int verbose_output = 0;   //Test Flag to enable/disable printing on informations
 
 //*************************
 //*** Things to change  ***
@@ -289,8 +289,6 @@ void setup()
   initiate_time();        //Get NTP and time set up for the first time
   //Blynk.begin(auth, ssid, pass);  //Blynk setup (if being used).
 
-  //*** TESTING use only   .Set statement to true.  Overide setup from SPIFFs files
-  verbose_output = 0; //*TESTING* Flag to enable/disable printing on informations
 
   if (1 == 0)
   {
@@ -322,8 +320,19 @@ void setup()
     Serial.print(",   epoch = ");
     Serial.println(epoch);
   }
+
+  SPIFFS.end();
+
   ArduinoOTA.onStart([]() {
-    Serial.println("Start");
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_SPIFFS
+      type = "filesystem";
+    }
+
+    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+    Serial.println("Start updating " + type);
   });
   ArduinoOTA.onEnd([]() {
     Serial.println("\nEnd");
@@ -333,18 +342,25 @@ void setup()
   });
   ArduinoOTA.onError([](ota_error_t error) {
     Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR)
+    if (error == OTA_AUTH_ERROR) {
       Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR)
+    } else if (error == OTA_BEGIN_ERROR) {
       Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR)
+    } else if (error == OTA_CONNECT_ERROR) {
       Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR)
+    } else if (error == OTA_RECEIVE_ERROR) {
       Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR)
+    } else if (error == OTA_END_ERROR) {
       Serial.println("End Failed");
+    }
   });
-  ArduinoOTA.begin();  
+  ArduinoOTA.begin();
+
+  Serial.println("OTA Ready");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.println("");  
+
 }
 
 //Do the main execution loop
@@ -366,7 +382,6 @@ void loop()
   }
 }
 
-//Connect to the WiFi and manage credentials
 //Connect to the WiFi and manage credentials
 void WiFi_and_Credentials()
 {
@@ -776,7 +791,6 @@ void WiFi_and_Credentials()
   //Test_alarm
   //alarm_local_minutes_from_midnight = 1030;
 }
-
 
 void ConnectToAP()
 {
@@ -2087,7 +2101,7 @@ void decode_epoch(unsigned long currentTime)
 
 void update_epoch_time()
 {
-
+  int getNTPtimecount = 0;    //Counter for the number of time to try and get NTP time
   epoch = epochstart + (((millis() - startmillis) / 1000) * timefactor); //Get epoch from millis count.  May get over writtem by NTP pull.  timefactor is for testing to accellerate time for testing
   printNTP = 0;                                                          //Flag to state time was not from an NTP request.
 
@@ -2110,6 +2124,7 @@ void update_epoch_time()
     }
 
     Request_Time(); //Get the timedata
+    getNTPtimecount ++;
     printNTP = 1;   //1 is a flag to serialprint the time (only used for NTP pull not for millis updates)
     delay(2000);
     NTPdelaycounter++; //Count how many delay functions after request time
@@ -2133,6 +2148,7 @@ void update_epoch_time()
         //If after 2 tried then try re-requesting the time
         retryNTP += 1; //Update the counter for informational only, not used in the program
         Request_Time();
+        getNTPtimecount ++;
       }
     }
 
