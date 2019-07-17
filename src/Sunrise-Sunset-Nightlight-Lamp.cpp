@@ -56,8 +56,13 @@
 #include <DFPlayer_Mini_Mp3.h> //Library for TF Sound module
 #include <ESP8266WiFiMulti.h>
 #include <ArduinoOTA.h>
+#include "ESP8266FtpServer.h"
 
-ESP8266WiFiMulti wifiMulti;     // Create an instance of the ESP8266WiFiMulti class, called 'wifiMulti'
+//Classes
+ESP8266WiFiMulti wifiMulti; // Create an instance of the ESP8266WiFiMulti class, called 'wifiMulti'
+FtpServer ftpSrv;
+WiFiUDP udp; // A UDP instance to let us send and receive packets over UDP
+IPAddress timeServer;
 
 //#include <DNSServer.h>
 //#include <Arduino.h>
@@ -146,10 +151,11 @@ int howbright = 255; //0-255 LED Brightness level.  Ooverwritten by user input
 
 //SPIFFS Filenames
 String HTTPfilename = "/APIaddress.txt"; //Filename for storing Sunrise API HTTP address in SPIFFS
-String Modefilename = "/Mode.txt";       //Filename for storing Sunrise Mode in SPIFFS (3 digits:  Mode, Top lamp, Flash)
+String modefilename = "/mode.txt";       //Filename for storing Sunrise Mode in SPIFFS (3 digits:  Mode, Top lamp, Flash)
 String UTCfilename = "/UTC.txt";         //Filename for storing Sunrise UTC in SPIFFS
-String chimefilename = "/chime.txt";     //Filename for storing Sunrise UTC in SPIFFS
-String alarmfilename = "/alarm.txt";     //Filename for storing Sunrise UTC in SPIFFS
+String chimefilename = "/chime.txt";     //Filename for storing Sunrise chime in SPIFFS
+String alarmfilename = "/alarm.txt";     //Filename for storing Sunrise alarm in SPIFFS
+String restartfilename = "/restart.txt"; //Filename for triggering restart in SPIFFS
 
 //Lightmode, TARDIS, Longitude/Latitude and UTC are stated here but overwritten when webpage credentials are entered (if using WiFi Manager)
 const char *NTPServerName = "0.nz.pool.ntp.org"; //local NTP server
@@ -177,7 +183,7 @@ int touchtimemin = 1000;  //Min touch to trigger spoken clock_minutes
 int touchalarmmin = 3000; //Max value to trigger spoken clock, greater than go to Alarm change
 int touchUTC = 10000;     //this value or more to go into UTC change
 
-int verbose_output = 0;   //Test Flag to enable/disable printing on informations
+int verbose_output = 0; //Test Flag to enable/disable printing on informations
 
 //*************************
 //*** Things to change  ***
@@ -193,8 +199,8 @@ const char pass[] = ""; //define pass or the ConnectAP function errors (even tho
 
 //Wifi and internet variables
 const unsigned int localPort = 2390; // local port to listen for UDP packets
-WiFiUDP udp;                         // A UDP instance to let us send and receive packets over UDP
-IPAddress timeServer;
+String recovered_ssid;
+String recovered_pass;
 
 //Sunrise - Sunset API variables
 char sunrise_api_request[100]; //It should end up containing an adress like this "http://api.sunrise-sunset.org/json?lat=-41.2865&lng=174.7762";
@@ -248,10 +254,10 @@ int red = 0;
 char sinetable[] = {127, 152, 176, 198, 217, 233, 245, 252, 254, 252, 245, 233, 217, 198, 176, 152, 128, 103, 79, 57, 38, 22, 38, 57, 79, 103};
 
 //Array for the chime hours to go into.  24 digits starting with midnight.  0=no chime, 1=chime.  e.g 0000001111111111111111100
-char chime[25];
+char chime[26];
 
 //Specified alarm time by user, in format HHMMAM/HHMMPM
-char alarm[6];
+char alarm[8];
 int alarmstate = 55;                          //55=Alarm ON 56=Alarm OFF  (0055.mp3 / 0056.mp3)
 int alarm_local_minutes_from_midnight = 2000; //2000 minutes will never happen (e.g wont trigger - acceptable 0-1440)
 int alarmdone = -1;                           //Flag to make sure alarm runs only once, -1 is an invalid time (mins from midnight) so won't run
@@ -289,7 +295,6 @@ void setup()
   initiate_time();        //Get NTP and time set up for the first time
   //Blynk.begin(auth, ssid, pass);  //Blynk setup (if being used).
 
-
   if (1 == 0)
   {
     checkreset(0);          //Sending 1 = Clear SPIFFs  (0 = normal)
@@ -321,13 +326,16 @@ void setup()
     Serial.println(epoch);
   }
 
-  SPIFFS.end();
+  ftpSrv.begin(recovered_ssid, recovered_pass); // username, password for ftp. Set ports in ESP8266FtpServer.h (default 21, 50009 for PASV)
 
   ArduinoOTA.onStart([]() {
     String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
+    if (ArduinoOTA.getCommand() == U_FLASH)
+    {
       type = "sketch";
-    } else { // U_SPIFFS
+    }
+    else
+    { // U_SPIFFS
       type = "filesystem";
     }
 
@@ -342,15 +350,24 @@ void setup()
   });
   ArduinoOTA.onError([](ota_error_t error) {
     Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
+    if (error == OTA_AUTH_ERROR)
+    {
       Serial.println("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
+    }
+    else if (error == OTA_BEGIN_ERROR)
+    {
       Serial.println("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
+    }
+    else if (error == OTA_CONNECT_ERROR)
+    {
       Serial.println("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
+    }
+    else if (error == OTA_RECEIVE_ERROR)
+    {
       Serial.println("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
+    }
+    else if (error == OTA_END_ERROR)
+    {
       Serial.println("End Failed");
     }
   });
@@ -359,8 +376,9 @@ void setup()
   Serial.println("OTA Ready");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
-  Serial.println("");  
+  Serial.println("");
 
+  //SPIFFS.end();   //If this is enabled FTP stops working
 }
 
 //Do the main execution loop
@@ -368,6 +386,7 @@ void loop()
 {
   //Blynk.run();          //If Blynk being used
   ArduinoOTA.handle();
+  ftpSrv.handleFTP();
   checkreset(0);       //Has the GPIO (D3) been taken low to reset WiFiManager / clears SPIFFS?
   update_epoch_time(); //update epoch time by millis update ot NTP request
   decode_epoch(epoch); //epoch has been updated, Now turn this into UTC clock_minutes_from_midnight
@@ -377,8 +396,15 @@ void loop()
 
   if (mp3vol > 0)
   {                      //Onyl check sensor and alarm if Volume set in Wifi manager (e.g only if sound option used)
-    touchsensor_check(); //Check if the touchsensor has been triggered and action
+    touchsensor_check(); //Check if the touchsensor has been triggered and action.  If no sound option (resistor/cap) the will cause the ESP to run very slow
     alarm_check();       //Check if the alarm has been triggered and action
+  }
+
+  if (SPIFFS.exists(restartfilename) == true)
+  {
+    SPIFFS.remove(restartfilename);
+    delay(5000);
+    ESP.restart();
   }
 }
 
@@ -432,7 +458,7 @@ void WiFi_and_Credentials()
       Serial.println("File Closed");
 
       //Read Mode file data
-      File g = SPIFFS.open(Modefilename, "r");
+      File g = SPIFFS.open(modefilename, "r");
 
       if (!g)
       {
@@ -529,7 +555,7 @@ void WiFi_and_Credentials()
 
     WiFiManagerParameter custom_longitude("Longitude", "Longitude", "", 10);
     WiFiManagerParameter custom_latitude("Latitude", "Latitude", "", 10);
-    WiFiManagerParameter custom_mode("Mode", "Mode", "", 4);
+    WiFiManagerParameter custom_mode("mode", "mode", "", 4);
     WiFiManagerParameter custom_UTC("UTC", "UTC", "", 3);
     WiFiManagerParameter custom_chime("chime", "chime", "", 25);
     WiFiManagerParameter custom_alarm("alarm", "alarm", "", 7);
@@ -572,7 +598,7 @@ void WiFi_and_Credentials()
 
     //Create New Mode File And Write Data to It
     //w=Write Open file for writing
-    File g = SPIFFS.open(Modefilename, "w");
+    File g = SPIFFS.open(modefilename, "w");
 
     if (!g)
     {
@@ -606,6 +632,7 @@ void WiFi_and_Credentials()
 
     //Create New chime File And Write Data to It
     //w=Write Open file for writing
+
     File i = SPIFFS.open(chimefilename, "w");
 
     if (!i)
@@ -696,7 +723,7 @@ void WiFi_and_Credentials()
   //Entry x 5 +5 gives range of 55-255
   howbright = (howbright_temp * 50) + 5;
 
-  //Get volume from alarm array
+  //Get volume from chime array
   char buffer0[1];
   buffer0[0] = chime[0];
   mp3vol = atoi(buffer0);
@@ -790,6 +817,46 @@ void WiFi_and_Credentials()
 
   //Test_alarm
   //alarm_local_minutes_from_midnight = 1030;
+
+  //Un-comment from WiFiManager.cpp
+  // void WiFiManager::startWPS() {
+  //   DEBUG_WM(F("START WPS"));
+  //   WiFi.beginWPSConfig();
+  //   DEBUG_WM(F("END WPS"));
+  // }
+
+  //   String WiFiManager::getSSID() {
+  //   if (_ssid == "") {
+  //     DEBUG_WM(F("Reading SSID"));
+  //     _ssid = WiFi.SSID();
+  //     DEBUG_WM(F("SSID: "));
+  //     DEBUG_WM(_ssid);
+  //   }
+  //   return _ssid;
+  //   }
+
+  //   String WiFiManager::getPassword() {
+  //   if (_pass == "") {
+  //     DEBUG_WM(F("Reading Password"));
+  //     _pass = WiFi.psk();
+  //     DEBUG_WM("Password: " + _pass);
+  //     //DEBUG_WM(_pass);
+  //   }
+  //   return _pass;
+  //   }
+
+  //Add last 2 lines into WiFiManager.h
+  // class WiFiManager
+  // {
+  //   public:
+  //     WiFiManager();
+  //     ~WiFiManager();
+
+  // 	String          getSSID();
+  // 	String          getPassword();
+
+  recovered_ssid = wifiManager.getSSID();
+  recovered_pass = wifiManager.getPassword();
 }
 
 void ConnectToAP()
@@ -1487,11 +1554,11 @@ void checkreset(int ClearSPIFFS)
       Serial.println("** RESET **");
       Serial.println("** RESET **");
 
-      SPIFFS.remove("\" & HTTPfilename");
-      SPIFFS.remove("\" & Modefilename");
-      SPIFFS.remove("\" & UTCfilename");
-      SPIFFS.remove("\" & chimefilename");
-      SPIFFS.remove("\" & alarmfilename");
+      SPIFFS.remove(HTTPfilename);
+      SPIFFS.remove(modefilename);
+      SPIFFS.remove(UTCfilename);
+      SPIFFS.remove(chimefilename);
+      SPIFFS.remove(alarmfilename);
       SPIFFS.format();
       WiFi.disconnect();
 
@@ -1696,7 +1763,7 @@ void show_chime_array()
   buffer7[0] = chime[0];
   chimehour = atoi(buffer7);
   Serial.print("Vol:");
-  Serial.print(atoi(buffer7));
+  Serial.print(chimehour);
   Serial.print(", ");
 
   for (int x = 1; x <= 24; x++)
@@ -2101,7 +2168,7 @@ void decode_epoch(unsigned long currentTime)
 
 void update_epoch_time()
 {
-  int getNTPtimecount = 0;    //Counter for the number of time to try and get NTP time
+  int getNTPtimecount = 0;                                               //Counter for the number of time to try and get NTP time
   epoch = epochstart + (((millis() - startmillis) / 1000) * timefactor); //Get epoch from millis count.  May get over writtem by NTP pull.  timefactor is for testing to accellerate time for testing
   printNTP = 0;                                                          //Flag to state time was not from an NTP request.
 
@@ -2124,8 +2191,8 @@ void update_epoch_time()
     }
 
     Request_Time(); //Get the timedata
-    getNTPtimecount ++;
-    printNTP = 1;   //1 is a flag to serialprint the time (only used for NTP pull not for millis updates)
+    getNTPtimecount++;
+    printNTP = 1; //1 is a flag to serialprint the time (only used for NTP pull not for millis updates)
     delay(2000);
     NTPdelaycounter++; //Count how many delay functions after request time
 
@@ -2148,7 +2215,7 @@ void update_epoch_time()
         //If after 2 tried then try re-requesting the time
         retryNTP += 1; //Update the counter for informational only, not used in the program
         Request_Time();
-        getNTPtimecount ++;
+        getNTPtimecount++;
       }
     }
 
