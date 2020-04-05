@@ -137,7 +137,7 @@ int mp3_selected = 1;           //Default mp3 to play ("mp3/0001.mp3" on SDcard)
 long MP3millis;
 
 //LED details
-#define NUM_LEDS_PER_STRIP 18 //Number of LEDs per strip
+#define NUM_LEDS_PER_STRIP 24 //Number of LEDs per strip
 #define PIN_LED D7            //I.O pin on ESP2866 device going to LEDs
 #define COLOR_ORDER GRB       // LED stips aren't all in the same RGB order.  If colours are wrong change this  e.g  RBG > GRB.   :RBG=TARDIS
 
